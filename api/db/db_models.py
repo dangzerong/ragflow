@@ -329,11 +329,12 @@ class BaseDataBase:
         database_config = settings.DATABASE.copy()
         db_name = database_config.pop("name")
         
-        pool_config = {
-            'max_retries': 5,
-            'retry_delay': 1,
-        }
-        database_config.update(pool_config)
+        # pool_config = {
+        #     'max_retries': 5,
+        #     'retry_delay': 1,
+        # }
+        # database_config.update(pool_config)
+        
         self.database_connection = PooledDatabase[settings.DATABASE_TYPE.upper()].value(
             db_name, **database_config
         )
