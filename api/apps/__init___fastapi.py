@@ -120,18 +120,8 @@ def register_page(app: FastAPI, page_path):
     return url_prefix
 
 def setup_routes(app: FastAPI):
-    """设置路由"""
-    pages_dir = [
-        Path(__file__).parent,
-        Path(__file__).parent.parent / "api" / "apps",
-        Path(__file__).parent.parent / "api" / "apps" / "sdk",
-    ]
-
-    client_urls_prefix = [
-        register_page(app, path) for dir in pages_dir for path in search_pages_path(dir)
-    ]
-    
-    # 添加用户路由
+    """设置路由 - 只注册用户相关接口"""
+    # 只添加用户路由
     from api.apps.user_app_fastapi import router as user_router
     app.include_router(user_router, prefix=f"/{API_VERSION}/user", tags=["User"])
 

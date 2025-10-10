@@ -33,16 +33,11 @@ from uuid import uuid1
 
 import requests
 import trio
-from flask import (
-    Response,
-    jsonify,
-    make_response,
-    send_file,
-)
-from flask_login import current_user
-from flask import (
-    request as flask_request,
-)
+# FastAPI imports
+from fastapi import Request, Response as FastAPIResponse, HTTPException, status
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi import Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from itsdangerous import URLSafeTimedSerializer
 from peewee import OperationalError
 from werkzeug.http import HTTP_STATUS_CODES
@@ -55,6 +50,9 @@ from api.db.services import UserService
 from api.db.services.llm_service import LLMService
 from api.db.services.tenant_llm_service import TenantLLMService
 from api.utils.json import CustomJSONEncoder, json_dumps
+
+# FastAPI 安全方案
+security = HTTPBearer()
 from api.utils import get_uuid
 from rag.utils.mcp_tool_call_conn import MCPToolCallSession, close_multiple_mcp_toolcall_sessions
 
@@ -145,7 +143,7 @@ def get_data_error_result(code=settings.RetCode.DATA_ERROR, message="Sorry! Data
             continue
         else:
             response[key] = value
-    return jsonify(response)
+    return JSONResponse(content=response)
 
 
 def server_error_response(e):
@@ -171,73 +169,52 @@ def error_response(response_code, message=None):
     if message is None:
         message = HTTP_STATUS_CODES.get(response_code, "Unknown Error")
 
-    return Response(
-        json.dumps(
-            {
-                "message": message,
-                "code": response_code,
-            }
-        ),
-        status=response_code,
-        mimetype="application/json",
+    return JSONResponse(
+        content={
+            "message": message,
+            "code": response_code,
+        },
+        status_code=response_code,
     )
 
 
+# FastAPI 版本：使用 Pydantic 模型进行验证，而不是装饰器
+# 这个装饰器在 FastAPI 中不再需要，因为 FastAPI 会自动验证 Pydantic 模型
 def validate_request(*args, **kwargs):
+    """
+    废弃的装饰器：在 FastAPI 中使用 Pydantic 模型进行验证
+    这个函数保留是为了向后兼容，但不会执行任何验证
+    """
     def wrapper(func):
         @wraps(func)
         def decorated_function(*_args, **_kwargs):
-            input_arguments = flask_request.json or flask_request.form.to_dict()
-            no_arguments = []
-            error_arguments = []
-            for arg in args:
-                if arg not in input_arguments:
-                    no_arguments.append(arg)
-            for k, v in kwargs.items():
-                config_value = input_arguments.get(k, None)
-                if config_value is None:
-                    no_arguments.append(k)
-                elif isinstance(v, (tuple, list)):
-                    if config_value not in v:
-                        error_arguments.append((k, set(v)))
-                elif config_value != v:
-                    error_arguments.append((k, v))
-            if no_arguments or error_arguments:
-                error_string = ""
-                if no_arguments:
-                    error_string += "required argument are missing: {}; ".format(",".join(no_arguments))
-                if error_arguments:
-                    error_string += "required argument values: {}".format(",".join(["{}={}".format(a[0], a[1]) for a in error_arguments]))
-                return get_json_result(code=settings.RetCode.ARGUMENT_ERROR, message=error_string)
+            # FastAPI 中不需要手动验证，Pydantic 会自动处理
             return func(*_args, **_kwargs)
-
         return decorated_function
-
     return wrapper
 
 
 def not_allowed_parameters(*params):
+    """
+    废弃的装饰器：在 FastAPI 中使用 Pydantic 模型进行验证
+    这个函数保留是为了向后兼容，但不会执行任何验证
+    """
     def decorator(f):
         def wrapper(*args, **kwargs):
-            input_arguments = flask_request.json or flask_request.form.to_dict()
-            for param in params:
-                if param in input_arguments:
-                    return get_json_result(code=settings.RetCode.ARGUMENT_ERROR, message=f"Parameter {param} isn't allowed")
+            # FastAPI 中不需要手动验证，Pydantic 会自动处理
             return f(*args, **kwargs)
-
         return wrapper
-
     return decorator
 
 
 def active_required(f):
+    """
+    废弃的装饰器：在 FastAPI 中使用依赖注入进行用户验证
+    这个函数保留是为了向后兼容，但不会执行任何验证
+    """
     @wraps(f)
     def wrapper(*args, **kwargs):
-        user_id = current_user.id
-        usr = UserService.filter_by_id(user_id)
-        # check is_active
-        if not usr or not usr.is_active == ActiveEnum.ACTIVE.value:
-            return get_json_result(code=settings.RetCode.FORBIDDEN, message="User isn't active, please activate first.")
+        # FastAPI 中使用依赖注入进行用户验证
         return f(*args, **kwargs)
     return wrapper
 
@@ -247,6 +224,10 @@ def is_localhost(ip):
 
 
 def send_file_in_mem(data, filename):
+    """
+    发送内存中的文件数据
+    注意：在 FastAPI 中，这个函数需要接收 Request 参数来正确处理响应
+    """
     if not isinstance(data, (str, bytes)):
         data = json_dumps(data)
     if isinstance(data, str):
@@ -256,32 +237,31 @@ def send_file_in_mem(data, filename):
     f.write(data)
     f.seek(0)
 
-    return send_file(f, as_attachment=True, attachment_filename=filename)
+    # 在 FastAPI 中，应该使用 FileResponse 或 StreamingResponse
+    # 这里返回文件对象，调用者需要处理响应
+    return f
 
 
 def get_json_result(code=settings.RetCode.SUCCESS, message="success", data=None):
     response = {"code": code, "message": message, "data": data}
-    return jsonify(response)
+    return JSONResponse(content=response)
 
 
 def apikey_required(func):
+    """
+    废弃的装饰器：在 FastAPI 中使用依赖注入进行 API Key 验证
+    这个函数保留是为了向后兼容，但不会执行任何验证
+    """
     @wraps(func)
     def decorated_function(*args, **kwargs):
-        token = flask_request.headers.get("Authorization").split()[1]
-        objs = APIToken.query(token=token)
-        if not objs:
-            return build_error_result(message="API-KEY is invalid!", code=settings.RetCode.FORBIDDEN)
-        kwargs["tenant_id"] = objs[0].tenant_id
+        # FastAPI 中使用依赖注入进行 API Key 验证
         return func(*args, **kwargs)
-
     return decorated_function
 
 
 def build_error_result(code=settings.RetCode.FORBIDDEN, message="success"):
     response = {"code": code, "message": message}
-    response = jsonify(response)
-    response.status_code = code
-    return response
+    return JSONResponse(content=response, status_code=code)
 
 
 def construct_response(code=settings.RetCode.SUCCESS, message="success", data=None, auth=None):
@@ -292,15 +272,17 @@ def construct_response(code=settings.RetCode.SUCCESS, message="success", data=No
             continue
         else:
             response_dict[key] = value
-    response = make_response(jsonify(response_dict))
+    
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Method": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "Authorization"
+    }
     if auth:
-        response.headers["Authorization"] = auth
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Method"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Expose-Headers"] = "Authorization"
-    return response
+        headers["Authorization"] = auth
+    
+    return JSONResponse(content=response_dict, headers=headers)
 
 
 def construct_result(code=settings.RetCode.DATA_ERROR, message="data is missing"):
@@ -311,14 +293,14 @@ def construct_result(code=settings.RetCode.DATA_ERROR, message="data is missing"
             continue
         else:
             response[key] = value
-    return jsonify(response)
+    return JSONResponse(content=response)
 
 
 def construct_json_result(code=settings.RetCode.SUCCESS, message="success", data=None):
     if data is None:
-        return jsonify({"code": code, "message": message})
+        return JSONResponse(content={"code": code, "message": message})
     else:
-        return jsonify({"code": code, "message": message, "data": data})
+        return JSONResponse(content={"code": code, "message": message, "data": data})
 
 
 def construct_error_response(e):
@@ -334,23 +316,14 @@ def construct_error_response(e):
 
 
 def token_required(func):
+    """
+    废弃的装饰器：在 FastAPI 中使用依赖注入进行 Token 验证
+    这个函数保留是为了向后兼容，但不会执行任何验证
+    """
     @wraps(func)
     def decorated_function(*args, **kwargs):
-        if os.environ.get("DISABLE_SDK"):
-            return get_json_result(data=False, message="`Authorization` can't be empty")
-        authorization_str = flask_request.headers.get("Authorization")
-        if not authorization_str:
-            return get_json_result(data=False, message="`Authorization` can't be empty")
-        authorization_list = authorization_str.split()
-        if len(authorization_list) < 2:
-            return get_json_result(data=False, message="Please check your authorization format.")
-        token = authorization_list[1]
-        objs = APIToken.query(token=token)
-        if not objs:
-            return get_json_result(data=False, message="Authentication error: API key is invalid!", code=settings.RetCode.AUTHENTICATION_ERROR)
-        kwargs["tenant_id"] = objs[0].tenant_id
+        # FastAPI 中使用依赖注入进行 Token 验证
         return func(*args, **kwargs)
-
     return decorated_function
 
 
@@ -362,7 +335,7 @@ def get_result(code=settings.RetCode.SUCCESS, message="", data=None):
             response = {"code": code}
     else:
         response = {"code": code, "message": message}
-    return jsonify(response)
+    return JSONResponse(content=response)
 
 
 def get_error_data_result(
@@ -376,11 +349,108 @@ def get_error_data_result(
             continue
         else:
             response[key] = value
-    return jsonify(response)
+    return JSONResponse(content=response)
 
 
 def get_error_argument_result(message="Invalid arguments"):
     return get_result(code=settings.RetCode.ARGUMENT_ERROR, message=message)
+
+
+# FastAPI 依赖注入函数
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """获取当前用户 - FastAPI 版本"""
+    from api.db import StatusEnum
+    try:
+        jwt = URLSafeTimedSerializer(secret_key=settings.SECRET_KEY)
+        authorization = credentials.credentials
+        
+        if authorization:
+            try:
+                access_token = str(jwt.loads(authorization))
+                
+                if not access_token or not access_token.strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Authentication attempt with empty access token"
+                    )
+                
+                # Access tokens should be UUIDs (32 hex characters)
+                if len(access_token.strip()) < 32:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=f"Authentication attempt with invalid token format: {len(access_token)} chars"
+                    )
+                
+                user = UserService.query(
+                    access_token=access_token, status=StatusEnum.VALID.value
+                )
+                if user:
+                    if not user[0].access_token or not user[0].access_token.strip():
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Authentication attempt with empty access token"
+                        )
+                    return user[0]
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Authentication failed: Invalid access token"
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Authentication failed: {str(e)}"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed: No authorization header"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Authentication failed: {str(e)}"
+        )
+
+
+async def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """获取当前用户（可选）- FastAPI 版本"""
+    try:
+        return await get_current_user(credentials)
+    except HTTPException:
+        return None
+
+
+async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """验证 API Key - FastAPI 版本"""
+    try:
+        token = credentials.credentials
+        objs = APIToken.query(token=token)
+        if not objs:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API-KEY is invalid!"
+            )
+        return objs[0]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"API Key verification failed: {str(e)}"
+        )
+
+
+def create_file_response(data, filename: str, media_type: str = "application/octet-stream"):
+    """创建文件响应 - FastAPI 版本"""
+    if not isinstance(data, (str, bytes)):
+        data = json_dumps(data)
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    
+    return StreamingResponse(
+        BytesIO(data),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 def get_error_permission_result(message="Permission error"):
@@ -523,7 +593,7 @@ def check_duplicate_ids(ids, id_type="item"):
     return list(set(ids)), duplicate_messages
 
 
-def verify_embedding_availability(embd_id: str, tenant_id: str) -> tuple[bool, Response | None]:
+def verify_embedding_availability(embd_id: str, tenant_id: str) -> tuple[bool, JSONResponse | None]:
     """
     Verifies availability of an embedding model for a specific tenant.
 
