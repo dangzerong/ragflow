@@ -91,6 +91,13 @@ async def create(
         e, t = TenantService.get_by_id(current_user.id)
         if not e:
             return get_data_error_result(message="Tenant not found.")
+        
+        # 设置 embd_id 默认值
+        if not request.embd_id:
+            req["embd_id"] = t.embd_id
+        else:
+            req["embd_id"] = request.embd_id
+            
         if request.parser_config:
             req["parser_config"] = request.parser_config
         else:

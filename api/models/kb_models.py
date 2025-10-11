@@ -23,6 +23,7 @@ class CreateKnowledgeBaseRequest(BaseModel):
     description: Optional[str] = Field(None, description="知识库描述")
     parser_id: Optional[str] = Field("naive", description="解析器ID")
     parser_config: Optional[Dict[str, Any]] = Field(None, description="解析器配置")
+    embd_id: Optional[str] = Field(None, description="嵌入模型ID")
 
 
 class UpdateKnowledgeBaseRequest(BaseModel):
