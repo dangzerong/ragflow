@@ -30,8 +30,6 @@ class UpdateKnowledgeBaseRequest(BaseModel):
     """更新知识库请求模型"""
     kb_id: str = Field(..., description="知识库ID")
     name: str = Field(..., description="知识库名称")
-    description: Optional[str] = Field(None, description="知识库描述")
-    parser_id: str = Field(..., description="解析器ID")
     pagerank: Optional[int] = Field(0, description="页面排名")
 
 

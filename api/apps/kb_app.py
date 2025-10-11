@@ -176,8 +176,6 @@ async def update(
 
         update_data = {
             "name": name,
-            "description": request.description,
-            "parser_id": request.parser_id,
             "pagerank": request.pagerank
         }
         if not KnowledgebaseService.update_by_id(kb.id, update_data):
