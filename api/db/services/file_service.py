@@ -479,11 +479,28 @@ class FileService(CommonService):
         return err, files
 
     @staticmethod
-    def parse_docs(file_objs, user_id):
+    async def parse_docs(file_objs, user_id):
         exe = ThreadPoolExecutor(max_workers=12)
         threads = []
         for file in file_objs:
-            threads.append(exe.submit(FileService.parse, file.filename, file.read(), False))
+            # Check if file has async read method (UploadFile)
+            if hasattr(file, 'read') and hasattr(file.read, '__call__'):
+                try:
+                    # Try to get the coroutine to check if it's async
+                    read_result = file.read()
+                    if hasattr(read_result, '__await__'):
+                        # It's an async method, await it
+                        blob = await read_result
+                    else:
+                        # It's a sync method
+                        blob = read_result
+                except Exception:
+                    # Fallback to sync read
+                    blob = file.read()
+            else:
+                blob = file.read()
+            
+            threads.append(exe.submit(FileService.parse, file.filename, blob, False))
 
         res = []
         for th in threads:

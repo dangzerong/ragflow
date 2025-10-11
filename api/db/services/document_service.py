@@ -830,7 +830,7 @@ def get_queue_length(priority):
     return int(group_info.get("lag", 0) or 0)
 
 
-def doc_upload_and_parse(conversation_id, file_objs, user_id):
+async def doc_upload_and_parse(conversation_id, file_objs, user_id):
     from api.db.services.api_service import API4ConversationService
     from api.db.services.conversation_service import ConversationService
     from api.db.services.dialog_service import DialogService
@@ -855,7 +855,7 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
 
     embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING, llm_name=kb.embd_id, lang=kb.language)
 
-    err, files = FileService.upload_document(kb, file_objs, user_id)
+    err, files = await FileService.upload_document(kb, file_objs, user_id)
     assert not err, "\n".join(err)
 
     def dummy(prog=None, msg=""):

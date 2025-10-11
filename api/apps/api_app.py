@@ -490,7 +490,7 @@ def upload():
 
 @manager.route('/document/upload_and_parse', methods=['POST'])  # noqa: F821
 @validate_request("conversation_id")
-def upload_parse():
+async def upload_parse():
     token = request.headers.get('Authorization').split()[1]
     objs = APIToken.query(token=token)
     if not objs:
@@ -507,7 +507,7 @@ def upload_parse():
             return get_json_result(
                 data=False, message='No file selected!', code=settings.RetCode.ARGUMENT_ERROR)
 
-    doc_ids = doc_upload_and_parse(request.form.get("conversation_id"), file_objs, objs[0].tenant_id)
+    doc_ids = await doc_upload_and_parse(request.form.get("conversation_id"), file_objs, objs[0].tenant_id)
     return get_json_result(data=doc_ids)
 
 

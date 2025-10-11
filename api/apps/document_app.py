@@ -826,7 +826,7 @@ async def parse(
         if not r or not r.group(1):
             return get_json_result(data=False, message="Can't not identify downloaded file", code=settings.RetCode.ARGUMENT_ERROR)
         f = File(r.group(1), os.path.join(download_path, r.group(1)))
-        txt = FileService.parse_docs([f], current_user.id)
+        txt = await FileService.parse_docs([f], current_user.id)
         return get_json_result(data=txt)
 
     if not files:
@@ -834,7 +834,7 @@ async def parse(
 
     # Use UploadFile directly
     file_objs = files
-    txt = FileService.parse_docs(file_objs, current_user.id)
+    txt = await FileService.parse_docs(file_objs, current_user.id)
 
     return get_json_result(data=txt)
 
