@@ -107,19 +107,6 @@ class SetMetaRequest(BaseModel):
     doc_id: str
     meta: str
 
-# File wrapper for compatibility
-class FileWrapper:
-    def __init__(self, upload_file: UploadFile):
-        self.filename = upload_file.filename
-        self.file = upload_file.file
-        self.content_type = upload_file.content_type
-    
-    def read(self):
-        return self.file.read()
-    
-    def save(self, path):
-        with open(path, "wb") as f:
-            f.write(self.file.read())
 
 # Dependency injection
 async def get_current_user():
@@ -144,8 +131,8 @@ async def upload(
     if not files:
         return get_json_result(data=False, message="No file part!", code=settings.RetCode.ARGUMENT_ERROR)
 
-    # Convert UploadFile to FileWrapper for compatibility
-    file_objs = [FileWrapper(file) for file in files]
+    # Use UploadFile directly
+    file_objs = files
     
     for file_obj in file_objs:
         if file_obj.filename == "":
@@ -724,8 +711,8 @@ async def upload_and_parse(
     if not files:
         return get_json_result(data=False, message="No file part!", code=settings.RetCode.ARGUMENT_ERROR)
 
-    # Convert UploadFile to FileWrapper for compatibility
-    file_objs = [FileWrapper(file) for file in files]
+    # Use UploadFile directly
+    file_objs = files
     
     for file_obj in file_objs:
         if file_obj.filename == "":
@@ -786,8 +773,8 @@ async def parse(
     if not files:
         return get_json_result(data=False, message="No file part!", code=settings.RetCode.ARGUMENT_ERROR)
 
-    # Convert UploadFile to FileWrapper for compatibility
-    file_objs = [FileWrapper(file) for file in files]
+    # Use UploadFile directly
+    file_objs = files
     txt = FileService.parse_docs(file_objs, current_user.id)
 
     return get_json_result(data=txt)
