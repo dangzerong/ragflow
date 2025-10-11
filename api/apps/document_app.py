@@ -777,7 +777,7 @@ async def upload_and_parse(
         if file_obj.filename == "":
             return get_json_result(data=False, message="No file selected!", code=settings.RetCode.ARGUMENT_ERROR)
 
-    doc_ids = doc_upload_and_parse(conversation_id, file_objs, current_user.id)
+    doc_ids = await doc_upload_and_parse(conversation_id, file_objs, current_user.id)
 
     return get_json_result(data=doc_ids)
 
