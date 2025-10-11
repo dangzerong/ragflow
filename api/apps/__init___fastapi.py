@@ -120,13 +120,14 @@ def register_page(app: FastAPI, page_path):
     return url_prefix
 
 def setup_routes(app: FastAPI):
-    """设置路由 - 只注册用户相关接口"""
-    # 只添加用户路由
+    """设置路由 - 注册所有接口"""
     from api.apps.user_app_fastapi import router as user_router
     from api.apps.kb_app import router as kb_router
+    from api.apps.document_app import router as document_router
 
     app.include_router(user_router, prefix=f"/{API_VERSION}/user", tags=["User"])
     app.include_router(kb_router, prefix=f"/{API_VERSION}/kb", tags=["KB"])
+    app.include_router(document_router, prefix=f"/{API_VERSION}/document", tags=["Document"])
 
 def get_current_user_from_token(authorization: str):
     """从token获取当前用户"""
