@@ -17,6 +17,7 @@ import json
 import os.path
 import pathlib
 import re
+import traceback
 from pathlib import Path
 from typing import List, Optional
 
@@ -627,6 +628,7 @@ async def run(
 
         return get_json_result(data=True)
     except Exception as e:
+        traceback.print_exc()
         return server_error_response(e)
 
 
