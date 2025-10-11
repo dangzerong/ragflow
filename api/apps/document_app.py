@@ -175,7 +175,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         )
 
 # Create router
-router = APIRouter(prefix="/v1/document", tags=["document"])
+router = APIRouter()
 
 
 @router.post("/upload")
