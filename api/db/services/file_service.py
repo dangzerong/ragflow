@@ -421,7 +421,7 @@ class FileService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def upload_document(self, kb, file_objs, user_id):
+    async def upload_document(self, kb, file_objs, user_id):
         root_folder = self.get_root_folder(user_id)
         pf_id = root_folder["id"]
         self.init_knowledgebase_docs(pf_id, user_id)
@@ -441,7 +441,7 @@ class FileService(CommonService):
                 while STORAGE_IMPL.obj_exist(kb.id, location):
                     location += "_"
 
-                blob = file.read()
+                blob = await file.read()
                 if filetype == FileType.PDF.value:
                     blob = read_potential_broken_pdf(blob)
                 STORAGE_IMPL.put(kb.id, location, blob)
