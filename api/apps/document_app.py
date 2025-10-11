@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from api import settings
 from api.common.check_team_permission import check_kb_team_permission
@@ -49,6 +50,9 @@ from rag.nlp import search
 from rag.utils.storage_factory import STORAGE_IMPL
 from pydantic import BaseModel
 from api.db.db_models import User
+
+# Security
+security = HTTPBearer()
 
 # Pydantic models for request/response
 class WebCrawlRequest(BaseModel):
@@ -109,11 +113,66 @@ class SetMetaRequest(BaseModel):
 
 
 # Dependency injection
-async def get_current_user():
-    # This should be implemented based on your authentication system
-    # For now, returning a mock user
-    from api.db.db_models import User
-    return User(id="current_user_id", tenant_id="tenant_id")
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """获取当前用户"""
+    from api.db import StatusEnum
+    from api.db.services.user_service import UserService
+    from fastapi import HTTPException, status
+    import logging
+    
+    try:
+        from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
+    except ImportError:
+        # 如果没有itsdangerous，使用jwt作为替代
+        import jwt
+        Serializer = jwt
+    
+    jwt = Serializer(secret_key=settings.SECRET_KEY)
+    authorization = credentials.credentials
+    
+    if authorization:
+        try:
+            access_token = str(jwt.loads(authorization))
+            
+            if not access_token or not access_token.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication attempt with empty access token"
+                )
+            
+            # Access tokens should be UUIDs (32 hex characters)
+            if len(access_token.strip()) < 32:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Authentication attempt with invalid token format: {len(access_token)} chars"
+                )
+            
+            user = UserService.query(
+                access_token=access_token, status=StatusEnum.VALID.value
+            )
+            if user:
+                if not user[0].access_token or not user[0].access_token.strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=f"User {user[0].email} has empty access_token in database"
+                    )
+                return user[0]
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid access token"
+                )
+        except Exception as e:
+            logging.warning(f"load_user got exception {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid access token"
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required"
+        )
 
 # Create router
 router = APIRouter(prefix="/v1/document", tags=["document"])
