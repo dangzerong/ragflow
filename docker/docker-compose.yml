@@ -49,4 +49,5 @@ services:
 
 networks:
   ragflow:
+    name: ragflow-20250916_ragflow
     external: true
