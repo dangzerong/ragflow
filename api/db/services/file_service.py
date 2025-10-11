@@ -15,6 +15,7 @@
 #
 import logging
 import re
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -472,6 +473,7 @@ class FileService(CommonService):
                 FileService.add_file_from_kb(doc, kb_folder["id"], kb.tenant_id)
                 files.append((doc, blob))
             except Exception as e:
+                traceback.print_exc()
                 err.append(file.filename + ": " + str(e))
 
         return err, files
