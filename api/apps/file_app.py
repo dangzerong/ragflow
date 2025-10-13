@@ -16,10 +16,11 @@
 import os
 import pathlib
 import re
+from typing import List, Optional
 
-import flask
-from flask import request
-from flask_login import login_required, current_user
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
+from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from api.common.check_team_permission import check_file_team_permission
 from api.db.services.document_service import DocumentService
@@ -34,22 +35,111 @@ from api.utils.api_utils import get_json_result
 from api.utils.file_utils import filename_type
 from api.utils.web_utils import CONTENT_TYPE_MAP
 from rag.utils.storage_factory import STORAGE_IMPL
+from pydantic import BaseModel
+
+# Security
+security = HTTPBearer()
+
+# Pydantic models for request/response
+class CreateFileRequest(BaseModel):
+    name: str
+    parent_id: Optional[str] = None
+    type: Optional[str] = None
+
+class RemoveFileRequest(BaseModel):
+    file_ids: List[str]
+
+class RenameFileRequest(BaseModel):
+    file_id: str
+    name: str
+
+class MoveFileRequest(BaseModel):
+    src_file_ids: List[str]
+    dest_file_id: str
+
+# Dependency injection
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """获取当前用户"""
+    from api.db import StatusEnum
+    from api.db.services.user_service import UserService
+    from fastapi import HTTPException, status
+    import logging
+    
+    try:
+        from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
+    except ImportError:
+        # 如果没有itsdangerous，使用jwt作为替代
+        import jwt
+        Serializer = jwt
+    
+    jwt = Serializer(secret_key=settings.SECRET_KEY)
+    authorization = credentials.credentials
+    
+    if authorization:
+        try:
+            access_token = str(jwt.loads(authorization))
+            
+            if not access_token or not access_token.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication attempt with empty access token"
+                )
+            
+            # Access tokens should be UUIDs (32 hex characters)
+            if len(access_token.strip()) < 32:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Authentication attempt with invalid token format: {len(access_token)} chars"
+                )
+            
+            user = UserService.query(
+                access_token=access_token, status=StatusEnum.VALID.value
+            )
+            if user:
+                if not user[0].access_token or not user[0].access_token.strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=f"User {user[0].email} has empty access_token in database"
+                    )
+                return user[0]
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid access token"
+                )
+        except Exception as e:
+            logging.warning(f"load_user got exception {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid access token"
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required"
+        )
+
+# Create router
+router = APIRouter()
 
 
-@manager.route('/upload', methods=['POST'])  # noqa: F821
-@login_required
-# @validate_request("parent_id")
-def upload():
-    pf_id = request.form.get("parent_id")
+@router.post('/upload')
+async def upload(
+    parent_id: Optional[str] = Form(None),
+    files: List[UploadFile] = File(...),
+    current_user = Depends(get_current_user)
+):
+    pf_id = parent_id
 
     if not pf_id:
         root_folder = FileService.get_root_folder(current_user.id)
         pf_id = root_folder["id"]
 
-    if 'file' not in request.files:
+    if not files:
         return get_json_result(
             data=False, message='No file part!', code=settings.RetCode.ARGUMENT_ERROR)
-    file_objs = request.files.getlist('file')
+    
+    file_objs = files
 
     for file_obj in file_objs:
         if file_obj.filename == '':
@@ -96,7 +186,7 @@ def upload():
             location = file_obj_names[file_len - 1]
             while STORAGE_IMPL.obj_exist(last_folder.id, location):
                 location += "_"
-            blob = file_obj.read()
+            blob = await file_obj.read()
             filename = duplicate_name(
                 FileService.query,
                 name=file_obj_names[file_len - 1],
@@ -119,13 +209,13 @@ def upload():
         return server_error_response(e)
 
 
-@manager.route('/create', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("name")
-def create():
-    req = request.json
-    pf_id = request.json.get("parent_id")
-    input_file_type = request.json.get("type")
+@router.post('/create')
+async def create(
+    req: CreateFileRequest,
+    current_user = Depends(get_current_user)
+):
+    pf_id = req.parent_id
+    input_file_type = req.type
     if not pf_id:
         root_folder = FileService.get_root_folder(current_user.id)
         pf_id = root_folder["id"]
@@ -134,7 +224,7 @@ def create():
         if not FileService.is_parent_folder_exist(pf_id):
             return get_json_result(
                 data=False, message="Parent Folder Doesn't Exist!", code=settings.RetCode.OPERATING_ERROR)
-        if FileService.query(name=req["name"], parent_id=pf_id):
+        if FileService.query(name=req.name, parent_id=pf_id):
             return get_data_error_result(
                 message="Duplicated folder name in the same folder.")
 
@@ -148,7 +238,7 @@ def create():
             "parent_id": pf_id,
             "tenant_id": current_user.id,
             "created_by": current_user.id,
-            "name": req["name"],
+            "name": req.name,
             "location": "",
             "size": 0,
             "type": file_type
@@ -159,17 +249,18 @@ def create():
         return server_error_response(e)
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
-@login_required
-def list_files():
-    pf_id = request.args.get("parent_id")
+@router.get('/list')
+async def list_files(
+    parent_id: Optional[str] = Query(None),
+    keywords: str = Query(""),
+    page: int = Query(1),
+    page_size: int = Query(15),
+    orderby: str = Query("create_time"),
+    desc: bool = Query(True),
+    current_user = Depends(get_current_user)
+):
+    pf_id = parent_id
 
-    keywords = request.args.get("keywords", "")
-
-    page_number = int(request.args.get("page", 1))
-    items_per_page = int(request.args.get("page_size", 15))
-    orderby = request.args.get("orderby", "create_time")
-    desc = request.args.get("desc", True)
     if not pf_id:
         root_folder = FileService.get_root_folder(current_user.id)
         pf_id = root_folder["id"]
@@ -180,7 +271,7 @@ def list_files():
             return get_data_error_result(message="Folder not found!")
 
         files, total = FileService.get_by_pf_id(
-            current_user.id, pf_id, page_number, items_per_page, orderby, desc, keywords)
+            current_user.id, pf_id, page, page_size, orderby, desc, keywords)
 
         parent_folder = FileService.get_parent_folder(pf_id)
         if not parent_folder:
@@ -191,9 +282,8 @@ def list_files():
         return server_error_response(e)
 
 
-@manager.route('/root_folder', methods=['GET'])  # noqa: F821
-@login_required
-def get_root_folder():
+@router.get('/root_folder')
+async def get_root_folder(current_user = Depends(get_current_user)):
     try:
         root_folder = FileService.get_root_folder(current_user.id)
         return get_json_result(data={"root_folder": root_folder})
@@ -201,10 +291,11 @@ def get_root_folder():
         return server_error_response(e)
 
 
-@manager.route('/parent_folder', methods=['GET'])  # noqa: F821
-@login_required
-def get_parent_folder():
-    file_id = request.args.get("file_id")
+@router.get('/parent_folder')
+async def get_parent_folder(
+    file_id: str = Query(...),
+    current_user = Depends(get_current_user)
+):
     try:
         e, file = FileService.get_by_id(file_id)
         if not e:
@@ -216,10 +307,11 @@ def get_parent_folder():
         return server_error_response(e)
 
 
-@manager.route('/all_parent_folder', methods=['GET'])  # noqa: F821
-@login_required
-def get_all_parent_folders():
-    file_id = request.args.get("file_id")
+@router.get('/all_parent_folder')
+async def get_all_parent_folders(
+    file_id: str = Query(...),
+    current_user = Depends(get_current_user)
+):
     try:
         e, file = FileService.get_by_id(file_id)
         if not e:
@@ -234,12 +326,12 @@ def get_all_parent_folders():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("file_ids")
-def rm():
-    req = request.json
-    file_ids = req["file_ids"]
+@router.post('/rm')
+async def rm(
+    req: RemoveFileRequest,
+    current_user = Depends(get_current_user)
+):
+    file_ids = req.file_ids
     try:
         for file_id in file_ids:
             e, file = FileService.get_by_id(file_id)
@@ -286,38 +378,38 @@ def rm():
         return server_error_response(e)
 
 
-@manager.route('/rename', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("file_id", "name")
-def rename():
-    req = request.json
+@router.post('/rename')
+async def rename(
+    req: RenameFileRequest,
+    current_user = Depends(get_current_user)
+):
     try:
-        e, file = FileService.get_by_id(req["file_id"])
+        e, file = FileService.get_by_id(req.file_id)
         if not e:
             return get_data_error_result(message="File not found!")
         if not check_file_team_permission(file, current_user.id):
             return get_json_result(data=False, message='No authorization.', code=settings.RetCode.AUTHENTICATION_ERROR)
         if file.type != FileType.FOLDER.value \
-            and pathlib.Path(req["name"].lower()).suffix != pathlib.Path(
+            and pathlib.Path(req.name.lower()).suffix != pathlib.Path(
                 file.name.lower()).suffix:
             return get_json_result(
                 data=False,
                 message="The extension of file can't be changed",
                 code=settings.RetCode.ARGUMENT_ERROR)
-        for file in FileService.query(name=req["name"], pf_id=file.parent_id):
-            if file.name == req["name"]:
+        for file in FileService.query(name=req.name, pf_id=file.parent_id):
+            if file.name == req.name:
                 return get_data_error_result(
                     message="Duplicated file name in the same folder.")
 
         if not FileService.update_by_id(
-                req["file_id"], {"name": req["name"]}):
+                req.file_id, {"name": req.name}):
             return get_data_error_result(
                 message="Database error (File rename)!")
 
-        informs = File2DocumentService.get_by_file_id(req["file_id"])
+        informs = File2DocumentService.get_by_file_id(req.file_id)
         if informs:
             if not DocumentService.update_by_id(
-                    informs[0].document_id, {"name": req["name"]}):
+                    informs[0].document_id, {"name": req.name}):
                 return get_data_error_result(
                     message="Database error (Document rename)!")
 
@@ -326,9 +418,8 @@ def rename():
         return server_error_response(e)
 
 
-@manager.route('/get/<file_id>', methods=['GET'])  # noqa: F821
-@login_required
-def get(file_id):
+@router.get('/get/{file_id}')
+async def get(file_id: str, current_user = Depends(get_current_user)):
     try:
         e, file = FileService.get_by_id(file_id)
         if not e:
@@ -341,7 +432,6 @@ def get(file_id):
             b, n = File2DocumentService.get_storage_address(file_id=file_id)
             blob = STORAGE_IMPL.get(b, n)
 
-        response = flask.make_response(blob)
         ext = re.search(r"\.([^.]+)$", file.name.lower())
         ext = ext.group(1) if ext else None
         if ext:
@@ -349,20 +439,26 @@ def get(file_id):
                 content_type = CONTENT_TYPE_MAP.get(ext, f"image/{ext}")
             else:
                 content_type = CONTENT_TYPE_MAP.get(ext, f"application/{ext}")
-            response.headers.set("Content-Type", content_type)
-        return response
+        else:
+            content_type = "application/octet-stream"
+            
+        return StreamingResponse(
+            iter([blob]),
+            media_type=content_type,
+            headers={"Content-Disposition": f"attachment; filename={file.name}"}
+        )
     except Exception as e:
         return server_error_response(e)
 
 
-@manager.route('/mv', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("src_file_ids", "dest_file_id")
-def move():
-    req = request.json
+@router.post('/mv')
+async def move(
+    req: MoveFileRequest,
+    current_user = Depends(get_current_user)
+):
     try:
-        file_ids = req["src_file_ids"]
-        parent_id = req["dest_file_id"]
+        file_ids = req.src_file_ids
+        parent_id = req.dest_file_id
         files = FileService.get_by_ids(file_ids)
         files_dict = {}
         for file in files:

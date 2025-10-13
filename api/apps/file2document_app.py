@@ -15,12 +15,14 @@
 #
 
 from pathlib import Path
+from typing import List
+
+from fastapi import APIRouter, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 
-from flask import request
-from flask_login import login_required, current_user
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.utils.api_utils import server_error_response, get_data_error_result, validate_request
 from api.utils import get_uuid
@@ -28,15 +30,92 @@ from api.db import FileType
 from api.db.services.document_service import DocumentService
 from api import settings
 from api.utils.api_utils import get_json_result
+from pydantic import BaseModel
+
+# Security
+security = HTTPBearer()
+
+# Pydantic models for request/response
+class ConvertRequest(BaseModel):
+    file_ids: List[str]
+    kb_ids: List[str]
+
+class RemoveFile2DocumentRequest(BaseModel):
+    file_ids: List[str]
+
+# Dependency injection
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """获取当前用户"""
+    from api.db import StatusEnum
+    from api.db.services.user_service import UserService
+    from fastapi import HTTPException, status
+    import logging
+    
+    try:
+        from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
+    except ImportError:
+        # 如果没有itsdangerous，使用jwt作为替代
+        import jwt
+        Serializer = jwt
+    
+    jwt = Serializer(secret_key=settings.SECRET_KEY)
+    authorization = credentials.credentials
+    
+    if authorization:
+        try:
+            access_token = str(jwt.loads(authorization))
+            
+            if not access_token or not access_token.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication attempt with empty access token"
+                )
+            
+            # Access tokens should be UUIDs (32 hex characters)
+            if len(access_token.strip()) < 32:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Authentication attempt with invalid token format: {len(access_token)} chars"
+                )
+            
+            user = UserService.query(
+                access_token=access_token, status=StatusEnum.VALID.value
+            )
+            if user:
+                if not user[0].access_token or not user[0].access_token.strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=f"User {user[0].email} has empty access_token in database"
+                    )
+                return user[0]
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid access token"
+                )
+        except Exception as e:
+            logging.warning(f"load_user got exception {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid access token"
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required"
+        )
+
+# Create router
+router = APIRouter()
 
 
-@manager.route('/convert', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("file_ids", "kb_ids")
-def convert():
-    req = request.json
-    kb_ids = req["kb_ids"]
-    file_ids = req["file_ids"]
+@router.post('/convert')
+async def convert(
+    req: ConvertRequest,
+    current_user = Depends(get_current_user)
+):
+    kb_ids = req.kb_ids
+    file_ids = req.file_ids
     file2documents = []
 
     try:
@@ -100,12 +179,12 @@ def convert():
         return server_error_response(e)
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("file_ids")
-def rm():
-    req = request.json
-    file_ids = req["file_ids"]
+@router.post('/rm')
+async def rm(
+    req: RemoveFile2DocumentRequest,
+    current_user = Depends(get_current_user)
+):
+    file_ids = req.file_ids
     if not file_ids:
         return get_json_result(
             data=False, message='Lack of "Files ID"', code=settings.RetCode.ARGUMENT_ERROR)
