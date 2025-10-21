@@ -126,12 +126,14 @@ def setup_routes(app: FastAPI):
     from api.apps.document_app import router as document_router
     from api.apps.file_app import router as file_router
     from api.apps.file2document_app import router as file2document_router
+    from api.apps.mcp_server_app import router as mcp_router
 
     app.include_router(user_router, prefix=f"/{API_VERSION}/user", tags=["User"])
     app.include_router(kb_router, prefix=f"/{API_VERSION}/kb", tags=["KB"])
     app.include_router(document_router, prefix=f"/{API_VERSION}/document", tags=["Document"])
     app.include_router(file_router, prefix=f"/{API_VERSION}/file", tags=["File"])
     app.include_router(file2document_router, prefix=f"/{API_VERSION}/file2document", tags=["File2Document"])
+    app.include_router(mcp_router, prefix=f"/{API_VERSION}/mcp", tags=["MCP"])
 
 def get_current_user_from_token(authorization: str):
     """从token获取当前用户"""
