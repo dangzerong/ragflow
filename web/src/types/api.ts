@@ -23,6 +23,9 @@ export interface GetKnowledgeBaseRequest {
 
 export interface ListKnowledgeBasesRequest {
   owner_ids?: string[];
+  keywords?: string;
+  page_size?: number;
+  page?: number;
 }
 
 export interface KnowledgeBase {

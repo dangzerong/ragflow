@@ -8,6 +8,7 @@
  */
 
 import axios from 'axios';
+import { message } from 'antd';
 import type {
   CreateKnowledgeBaseRequest,
   UpdateKnowledgeBaseRequest,
@@ -33,32 +34,23 @@ const api = axios.create({
   },
   // 确保请求数据被正确序列化
   transformRequest: [(data: any) => {
-    console.log('Transform request - original data:', data);
-    console.log('Transform request - data type:', typeof data);
-    
     // 处理undefined和null
     if (data === undefined || data === null) {
-      console.log('Transform request - data is undefined/null, returning empty object');
       return JSON.stringify({});
     }
     
     // 处理对象
     if (typeof data === 'object') {
-      const jsonString = JSON.stringify(data);
-      console.log('Transform request - serialized to JSON:', jsonString);
-      return jsonString;
+      return JSON.stringify(data);
     }
     
     // 处理字符串
     if (typeof data === 'string') {
-      console.log('Transform request - data is already string:', data);
       return data;
     }
     
     // 其他类型转换为字符串
-    const result = String(data);
-    console.log('Transform request - converted to string:', result);
-    return result;
+    return String(data);
   }],
 });
 
@@ -91,9 +83,6 @@ export const tokenManager = {
 api.interceptors.request.use(
   (config: any) => {
     const token = tokenManager.getToken();
-    console.log('Request interceptor - token:', token);
-    console.log('Request interceptor - config:', config);
-    console.log('Request interceptor - config.headers:', config.headers);
     
     // 确保headers对象存在
     if (!config.headers) {
@@ -102,26 +91,57 @@ api.interceptors.request.use(
     
     // 统一设置Content-Type（覆盖任何现有的设置）
     config.headers['Content-Type'] = 'application/json;charset=UTF-8';
-    console.log('Request interceptor - Content-Type set:', config.headers['Content-Type']);
     
     // 添加认证token（如果存在）
     if (token) {
       config.headers.Authorization = `${token}`;
-      console.log('Request interceptor - Authorization header set:', config.headers.Authorization);
     }
     
-    console.log('Request interceptor - final headers:', config.headers);
     return config;
   },
   (error: any) => {
-    console.error('Request interceptor error:', error);
     return Promise.reject(error);
   }
 );
 
+// 全局导航管理器
+let globalNavigate: ((path: string) => void) | null = null;
+
+export const setGlobalNavigate = (navigate: (path: string) => void) => {
+  globalNavigate = navigate;
+};
+
 // 响应拦截器
 api.interceptors.response.use(
   (response: any) => {
+    // 检查业务层面的401错误码
+    if (response.data?.code === 401 || response.data?.code === 403) {
+      // 显示用户友好的提示信息
+      if (response.data.code === 401) {
+        message.warning('登录已过期，请重新登录');
+      } else {
+        message.warning('访问被拒绝，请重新登录');
+      }
+      
+      // 清除token
+      tokenManager.clearToken();
+      
+      // 延迟执行跳转，确保message显示完成
+      setTimeout(() => {
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }, 500);
+      
+      // 返回一个被拒绝的Promise，模拟错误
+      return Promise.reject({
+        response: {
+          status: response.data.code,
+          data: response.data
+        }
+      });
+    }
+    
     // 保留响应头信息，将data和headers都返回
     return {
       ...response.data,
@@ -129,15 +149,26 @@ api.interceptors.response.use(
     };
   },
   (error: any) => {
-    console.error('API Error:', error);
-    // 处理401未授权
-    if (error.response?.status === 401) {
-      tokenManager.clearToken();
-      // 只有在非登录页面时才跳转
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+    // 处理HTTP层面的401未授权和403禁止访问
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      // 显示用户友好的提示信息
+      if (error.response?.status === 401) {
+        message.warning('登录已过期，请重新登录');
+      } else {
+        message.warning('访问被拒绝，请重新登录');
       }
+      
+      // 清除token
+      tokenManager.clearToken();
+      
+      // 延迟执行跳转，确保message显示完成
+      setTimeout(() => {
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }, 500);
     }
+    
     return Promise.reject(error);
   }
 );
@@ -175,7 +206,6 @@ export const knowledgeBaseApi = {
   list: async (data?: ListKnowledgeBasesRequest): Promise<ApiResponse<ListResponse<KnowledgeBase>>> => {
     // 确保data不为undefined，即使是空对象也要传递
     const requestData = data || {};
-    console.log('KnowledgeBase list request data:', requestData);
     return api.post('/v1/kb/list', requestData);
   },
 

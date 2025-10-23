@@ -12,18 +12,33 @@ const KnowledgeBaseList: React.FC = () => {
   const [editingKb, setEditingKb] = useState<KnowledgeBase | null>(null);
   const [form] = Form.useForm();
   const responsive = useResponsive();
+  
+  // 查询相关状态
+  const [searchKeywords, setSearchKeywords] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
 
   // 获取知识库列表
-  const fetchKbs = async () => {
+  const fetchKbs = async (keywords?: string, page?: number, size?: number) => {
     setLoading(true);
     try {
-      const response = await knowledgeBaseApi.list();
+      const requestData = {
+        keywords: keywords || searchKeywords,
+        page: page || currentPage,
+        page_size: size || pageSize
+      };
+      
+      const response = await knowledgeBaseApi.list(requestData);
+      
       if (response.code === 0) {
         setKbs(response.data?.kbs || []);
+        setTotal(response.data?.total || 0);
       } else {
         message.error(response.message || '获取知识库列表失败');
       }
     } catch (error) {
+      console.error('Error fetching knowledge bases:', error);
       message.error('获取知识库列表失败');
     } finally {
       setLoading(false);
@@ -34,6 +49,24 @@ const KnowledgeBaseList: React.FC = () => {
     fetchKbs();
   }, []);
 
+  // 处理查询
+  const handleSearch = () => {
+    setCurrentPage(1);
+    fetchKbs(searchKeywords, 1, pageSize);
+  };
+
+  // 处理搜索关键词变化
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchKeywords(e.target.value);
+  };
+
+  // 处理回车搜索
+  const handleSearchKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleSearch();
+    }
+  };
+
   // 创建知识库
   const handleCreate = async (values: CreateKnowledgeBaseRequest) => {
     try {
@@ -42,7 +75,7 @@ const KnowledgeBaseList: React.FC = () => {
         message.success('创建知识库成功');
         setModalVisible(false);
         form.resetFields();
-        fetchKbs();
+        fetchKbs(searchKeywords, currentPage, pageSize);
       } else {
         message.error(response.message || '创建知识库失败');
       }
@@ -60,7 +93,7 @@ const KnowledgeBaseList: React.FC = () => {
         setModalVisible(false);
         setEditingKb(null);
         form.resetFields();
-        fetchKbs();
+        fetchKbs(searchKeywords, currentPage, pageSize);
       } else {
         message.error(response.message || '更新知识库失败');
       }
@@ -75,7 +108,7 @@ const KnowledgeBaseList: React.FC = () => {
       const response = await knowledgeBaseApi.delete({ kb_id });
       if (response.code === 0) {
         message.success('删除知识库成功');
-        fetchKbs();
+        fetchKbs(searchKeywords, currentPage, pageSize);
       } else {
         message.error(response.message || '删除知识库失败');
       }
@@ -240,7 +273,7 @@ const KnowledgeBaseList: React.FC = () => {
         }}>
           <Button
             icon={<ReloadOutlined />}
-            onClick={fetchKbs}
+            onClick={() => fetchKbs(searchKeywords, currentPage, pageSize)}
             loading={loading}
             size={responsive.isMobile ? 'small' : 'middle'}
             style={{ flex: responsive.isMobile ? 1 : 'none' }}
@@ -271,14 +304,31 @@ const KnowledgeBaseList: React.FC = () => {
               placeholder="搜索知识库..."
               prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
               style={{ width: '300px' }}
+              value={searchKeywords}
+              onChange={handleSearchChange}
+              onKeyPress={handleSearchKeyPress}
               allowClear
             />
-            <Input
-              placeholder="团队筛选"
-              style={{ width: '150px' }}
-              defaultValue="全部"
-            />
-            <Button icon={<ReloadOutlined />}>
+            <Button 
+              type="primary"
+              icon={<SearchOutlined />}
+              onClick={handleSearch}
+              loading={loading}
+              style={{
+                background: '#e91e63',
+                borderColor: '#e91e63'
+              }}
+            >
+              查询
+            </Button>
+            <Button 
+              icon={<ReloadOutlined />}
+              onClick={() => {
+                setSearchKeywords('');
+                setCurrentPage(1);
+                fetchKbs('', 1, pageSize);
+              }}
+            >
               刷新
             </Button>
           </div>
@@ -323,12 +373,24 @@ const KnowledgeBaseList: React.FC = () => {
             rowKey="id"
             scroll={responsive.isMobile ? { x: 600 } : undefined}
             pagination={{
-              pageSize: responsive.isMobile ? 5 : 10,
+              current: currentPage,
+              pageSize: pageSize,
+              total: total,
               showSizeChanger: !responsive.isMobile,
               showQuickJumper: !responsive.isMobile,
               showTotal: (total) => `共 ${total} 条记录`,
               style: { marginTop: '16px' },
-              size: responsive.isMobile ? 'small' : 'default'
+              size: responsive.isMobile ? 'small' : 'default',
+              onChange: (page, size) => {
+                setCurrentPage(page);
+                setPageSize(size || pageSize);
+                fetchKbs(searchKeywords, page, size || pageSize);
+              },
+              onShowSizeChange: (_, size) => {
+                setCurrentPage(1);
+                setPageSize(size);
+                fetchKbs(searchKeywords, 1, size);
+              }
             }}
             size={responsive.isMobile ? 'small' : 'middle'}
           />

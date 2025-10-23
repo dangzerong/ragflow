@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { Layout, Menu, Button, Input, Avatar, Dropdown, Typography, Drawer } from 'antd';
 import { 
   DatabaseOutlined, 
@@ -17,7 +17,7 @@ import {
 import KnowledgeBaseList from './components/KnowledgeBaseList';
 import Login from './components/Login';
 import ResponsiveTest from './components/ResponsiveTest';
-import { tokenManager, authApi } from './services/api';
+import { tokenManager, authApi, setGlobalNavigate } from './services/api';
 import { useResponsive } from './hooks/useResponsive';
 
 const { Header, Sider, Content } = Layout;
@@ -423,6 +423,15 @@ const MainLayout: React.FC = () => {
 };
 
 const App: React.FC = () => {
+  const navigate = useNavigate();
+
+  // 设置全局导航管理器
+  useEffect(() => {
+    console.log('Setting global navigate function');
+    setGlobalNavigate(navigate);
+    console.log('Global navigate function set successfully');
+  }, [navigate]);
+
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
