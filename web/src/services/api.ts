@@ -22,7 +22,7 @@ import type {
   ListResponse
 } from '../types/api';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://192.168.0.118:9380';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:9380';
 
 // 创建axios实例，统一配置基础设置
 const api = axios.create({
@@ -94,8 +94,13 @@ api.interceptors.request.use(
     
     // 添加认证token（如果存在）
     if (token) {
-      config.headers.Authorization = `${token}`;
+      let processedToken = token;
+      if (!processedToken.startsWith('Bearer ')) {
+        processedToken = `Bearer ${processedToken}`;
+      }
+      config.headers.Authorization = processedToken;
     }
+
     
     return config;
   },
@@ -104,12 +109,7 @@ api.interceptors.request.use(
   }
 );
 
-// 全局导航管理器
-let globalNavigate: ((path: string) => void) | null = null;
-
-export const setGlobalNavigate = (navigate: (path: string) => void) => {
-  globalNavigate = navigate;
-};
+// 全局导航管理器（已移除，使用直接跳转方式）
 
 // 响应拦截器
 api.interceptors.response.use(

@@ -43,7 +43,7 @@ export const useResponsive = (breakpoints: BreakpointConfig = defaultBreakpoints
   });
 
   useEffect(() => {
-    let timeoutId: NodeJS.Timeout;
+    let timeoutId: number;
     
     const handleResize = () => {
       // 防抖处理，避免频繁触发

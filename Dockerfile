@@ -145,7 +145,8 @@ USER root
 WORKDIR /ragflow
 
 # install dependencies from uv.lock file
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml ./
+RUN uv lock --python 3.10
 
 # https://github.com/astral-sh/uv/issues/10462
 # uv records index url into uv.lock but doesn't failover among multiple indexes
@@ -198,7 +199,7 @@ COPY rag rag
 COPY agent agent
 COPY graphrag graphrag
 COPY agentic_reasoning agentic_reasoning
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml ./
 COPY mcp mcp
 COPY plugin plugin
 

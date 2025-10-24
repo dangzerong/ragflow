@@ -42,7 +42,7 @@ server: {
   port: 3000,
   proxy: {
     '/api': {
-      target: 'http://192.168.0.118:9380',
+      target: 'http://127.0.0.1:9380',
       changeOrigin: true,
       rewrite: (path) => path.replace(/^\/api/, '/api')
     }
