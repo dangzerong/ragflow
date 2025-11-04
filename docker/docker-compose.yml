@@ -4,7 +4,7 @@ include:
 services:
   ragflow:
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
     image: ${RAGFLOW_IMAGE}
     # Example configuration to set up an MCP server:

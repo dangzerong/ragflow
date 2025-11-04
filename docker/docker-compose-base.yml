@@ -1,39 +1,4 @@
 services:
-  es01:
-    container_name: ragflow-es-01
-    profiles:
-      - elasticsearch
-    image: elasticsearch:${STACK_VERSION}
-    volumes:
-      - esdata01:/usr/share/elasticsearch/data
-    ports:
-      - ${ES_PORT}:9200
-    env_file: .env
-    environment:
-      - node.name=es01
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
-      - bootstrap.memory_lock=false
-      - discovery.type=single-node
-      - xpack.security.enabled=true
-      - xpack.security.http.ssl.enabled=false
-      - xpack.security.transport.ssl.enabled=false
-      - cluster.routing.allocation.disk.watermark.low=5gb
-      - cluster.routing.allocation.disk.watermark.high=3gb
-      - cluster.routing.allocation.disk.watermark.flood_stage=2gb
-      - TZ=${TIMEZONE}
-    mem_limit: ${MEM_LIMIT}
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    healthcheck:
-      test: ["CMD-SHELL", "curl http://localhost:9200"]
-      interval: 10s
-      timeout: 10s
-      retries: 120
-    networks:
-      - ragflow
-    restart: on-failure
 
   opensearch01:
     container_name: ragflow-opensearch-01
@@ -73,34 +38,27 @@ services:
       - ragflow
     restart: on-failure
 
-  infinity:
-    container_name: ragflow-infinity
-    profiles:
-      - infinity
-    image: infiniflow/infinity:v0.6.1
-    volumes:
-      - infinity_data:/var/infinity
-      - ./infinity_conf.toml:/infinity_conf.toml
-    command: ["-f", "/infinity_conf.toml"]
-    ports:
-      - ${INFINITY_THRIFT_PORT}:23817
-      - ${INFINITY_HTTP_PORT}:23820
-      - ${INFINITY_PSQL_PORT}:5432
+
+  postgres:
+    image: postgres:15
+    container_name: ragflow-postgres
     env_file: .env
     environment:
+      - POSTGRES_DB=${POSTGRES_DBNAME}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - TZ=${TIMEZONE}
-    mem_limit: ${MEM_LIMIT}
-    ulimits:
-      nofile:
-        soft: 500000
-        hard: 500000
+    ports:
+      - ${POSTGRES_PORT-5440}:5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - ragflow
     healthcheck:
-      test: ["CMD", "curl", "http://localhost:23820/admin/node/current"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DBNAME}"]
       interval: 10s
-      timeout: 10s
-      retries: 120
+      timeout: 5s
+      retries: 5
     restart: on-failure
 
   sandbox-executor-manager:
@@ -131,36 +89,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: on-failure
-
-  mysql:
-    # mysql:5.7 linux/arm64 image is unavailable.
-    image: mysql:8.0.39
-    container_name: ragflow-mysql
-    env_file: .env
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
-      - TZ=${TIMEZONE}
-    command:
-      --max_connections=1000
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --default-authentication-plugin=mysql_native_password
-      --tls_version="TLSv1.2,TLSv1.3"
-      --init-file /data/application/init.sql
-      --binlog_expire_logs_seconds=604800
-    ports:
-      - ${MYSQL_PORT}:3306
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./init.sql:/data/application/init.sql
-    networks:
-      - ragflow
-    healthcheck:
-      test: ["CMD", "mysqladmin" ,"ping", "-uroot", "-p${MYSQL_PASSWORD}"]
-      interval: 10s
-      timeout: 10s
-      retries: 3
     restart: on-failure
 
   minio:
@@ -207,47 +135,24 @@ services:
       start_period: 10s    
 
 
-  kibana:
-    container_name: ragflow-kibana
-    profiles:
-      - kibana
-    image: kibana:${STACK_VERSION}
-    ports:
-      - ${KIBANA_PORT-5601}:5601
-    env_file: .env
-    environment:
-      - TZ=${TIMEZONE}
-    volumes:
-      - kibana_data:/usr/share/kibana/data
-    depends_on:
-      es01:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
-      interval: 10s
-      timeout: 10s
-      retries: 120
-    networks:
-      - ragflow
-    restart: on-failure
-
 
 volumes:
   esdata01:
-    driver: local
+    name: ragflow_esdata01
   osdata01:
-    driver: local
+    name: ragflow_osdata01
   infinity_data:
-    driver: local
+    name: ragflow_infinity_data
   mysql_data:
-    driver: local
+    name: ragflow_mysql_data
   minio_data:
-    driver: local
+    name: ragflow_minio_data
   redis_data:
-    driver: local
-  kibana_data:
-    driver: local
+    name: ragflow_redis_data
+  postgres_data:
+    name: ragflow_postgres_data
 
 networks:
   ragflow:
+    name: ragflow
     driver: bridge
