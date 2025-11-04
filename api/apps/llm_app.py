@@ -15,22 +15,36 @@
 #
 import logging
 import json
-from flask import request
-from flask_login import login_required, current_user
+from fastapi import APIRouter, Depends, Query
+
+from api.apps.models.auth_dependencies import get_current_user
+from api.apps.models.llm_models import (
+    SetApiKeyRequest,
+    AddLLMRequest,
+    DeleteLLMRequest,
+    DeleteFactoryRequest,
+    MyLLMsQuery,
+    ListLLMsQuery,
+)
 from api.db.services.tenant_llm_service import LLMFactoriesService, TenantLLMService
 from api.db.services.llm_service import LLMService
 from api import settings
-from api.utils.api_utils import server_error_response, get_data_error_result, validate_request
+from api.utils.api_utils import server_error_response, get_data_error_result
 from api.db import StatusEnum, LLMType
 from api.db.db_models import TenantLLM
 from api.utils.api_utils import get_json_result
 from api.utils.base64_image import test_image
 from rag.llm import EmbeddingModel, ChatModel, RerankModel, CvModel, TTSModel
 
+# 创建路由器
+router = APIRouter()
 
-@manager.route('/factories', methods=['GET'])  # noqa: F821
-@login_required
-def factories():
+
+@router.get('/factories')
+async def factories(
+    current_user = Depends(get_current_user)
+):
+    """获取 LLM 工厂列表"""
     try:
         fac = LLMFactoriesService.get_all()
         fac = [f.to_dict() for f in fac if f.name not in ["Youdao", "FastEmbed", "BAAI"]]
@@ -50,11 +64,13 @@ def factories():
         return server_error_response(e)
 
 
-@manager.route('/set_api_key', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("llm_factory", "api_key")
-def set_api_key():
-    req = request.json
+@router.post('/set_api_key')
+async def set_api_key(
+    request: SetApiKeyRequest,
+    current_user = Depends(get_current_user)
+):
+    """设置 API Key"""
+    req = request.model_dump(exclude_unset=True)
     # test if api key works
     chat_passed, embd_passed, rerank_passed = False, False, False
     factory = req["llm_factory"]
@@ -64,7 +80,7 @@ def set_api_key():
         if not embd_passed and llm.model_type == LLMType.EMBEDDING.value:
             assert factory in EmbeddingModel, f"Embedding model from {factory} is not supported yet."
             mdl = EmbeddingModel[factory](
-                req["api_key"], llm.llm_name, base_url=req.get("base_url"))
+                req["api_key"], llm.llm_name, base_url=req.get("base_url", ""))
             try:
                 arr, tc = mdl.encode(["Test if the api key is available"])
                 if len(arr[0]) == 0:
@@ -75,7 +91,7 @@ def set_api_key():
         elif not chat_passed and llm.model_type == LLMType.CHAT.value:
             assert factory in ChatModel, f"Chat model from {factory} is not supported yet."
             mdl = ChatModel[factory](
-                req["api_key"], llm.llm_name, base_url=req.get("base_url"), **extra)
+                req["api_key"], llm.llm_name, base_url=req.get("base_url", ""), **extra)
             try:
                 m, tc = mdl.chat(None, [{"role": "user", "content": "Hello! How are you doing!"}],
                                  {"temperature": 0.9, 'max_tokens': 50})
@@ -88,7 +104,7 @@ def set_api_key():
         elif not rerank_passed and llm.model_type == LLMType.RERANK:
             assert factory in RerankModel, f"Re-rank model from {factory} is not supported yet."
             mdl = RerankModel[factory](
-                req["api_key"], llm.llm_name, base_url=req.get("base_url"))
+                req["api_key"], llm.llm_name, base_url=req.get("base_url", ""))
             try:
                 arr, tc = mdl.similarity("What's the weather?", ["Is it sunny today?"])
                 if len(arr) == 0 or tc == 0:
@@ -133,11 +149,13 @@ def set_api_key():
     return get_json_result(data=True)
 
 
-@manager.route('/add_llm', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("llm_factory")
-def add_llm():
-    req = request.json
+@router.post('/add_llm')
+async def add_llm(
+    request: AddLLMRequest,
+    current_user = Depends(get_current_user)
+):
+    """添加 LLM"""
+    req = request.model_dump(exclude_unset=True)
     factory = req["llm_factory"]
     api_key = req.get("api_key", "x")
     llm_name = req.get("llm_name")
@@ -153,11 +171,27 @@ def add_llm():
 
     elif factory == "Tencent Hunyuan":
         req["api_key"] = apikey_json(["hunyuan_sid", "hunyuan_sk"])
-        return set_api_key()
+        # 创建 SetApiKeyRequest 并调用 set_api_key 逻辑
+        set_api_key_req = SetApiKeyRequest(
+            llm_factory=req["llm_factory"],
+            api_key=req["api_key"],
+            base_url=req.get("api_base", req.get("base_url", "")),
+            model_type=req.get("model_type"),
+            llm_name=req.get("llm_name")
+        )
+        return await set_api_key(set_api_key_req, current_user)
 
     elif factory == "Tencent Cloud":
         req["api_key"] = apikey_json(["tencent_cloud_sid", "tencent_cloud_sk"])
-        return set_api_key()
+        # 创建 SetApiKeyRequest 并调用 set_api_key 逻辑
+        set_api_key_req = SetApiKeyRequest(
+            llm_factory=req["llm_factory"],
+            api_key=req["api_key"],
+            base_url=req.get("api_base", req.get("base_url", "")),
+            model_type=req.get("model_type"),
+            llm_name=req.get("llm_name")
+        )
+        return await set_api_key(set_api_key_req, current_user)
 
     elif factory == "Bedrock":
         # For Bedrock, due to its special authentication method
@@ -293,32 +327,37 @@ def add_llm():
     return get_json_result(data=True)
 
 
-@manager.route('/delete_llm', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("llm_factory", "llm_name")
-def delete_llm():
-    req = request.json
+@router.post('/delete_llm')
+async def delete_llm(
+    request: DeleteLLMRequest,
+    current_user = Depends(get_current_user)
+):
+    """删除 LLM"""
     TenantLLMService.filter_delete(
-        [TenantLLM.tenant_id == current_user.id, TenantLLM.llm_factory == req["llm_factory"],
-         TenantLLM.llm_name == req["llm_name"]])
+        [TenantLLM.tenant_id == current_user.id, TenantLLM.llm_factory == request.llm_factory,
+         TenantLLM.llm_name == request.llm_name])
     return get_json_result(data=True)
 
 
-@manager.route('/delete_factory', methods=['POST'])  # noqa: F821
-@login_required
-@validate_request("llm_factory")
-def delete_factory():
-    req = request.json
+@router.post('/delete_factory')
+async def delete_factory(
+    request: DeleteFactoryRequest,
+    current_user = Depends(get_current_user)
+):
+    """删除工厂"""
     TenantLLMService.filter_delete(
-        [TenantLLM.tenant_id == current_user.id, TenantLLM.llm_factory == req["llm_factory"]])
+        [TenantLLM.tenant_id == current_user.id, TenantLLM.llm_factory == request.llm_factory])
     return get_json_result(data=True)
 
 
-@manager.route('/my_llms', methods=['GET'])  # noqa: F821
-@login_required
-def my_llms():
+@router.get('/my_llms')
+async def my_llms(
+    query: MyLLMsQuery = Depends(),
+    current_user = Depends(get_current_user)
+):
+    """获取我的 LLMs"""
     try:
-        include_details = request.args.get('include_details', 'false').lower() == 'true'
+        include_details = query.include_details.lower() == 'true'
 
         if include_details:
             res = {}
@@ -365,12 +404,15 @@ def my_llms():
         return server_error_response(e)
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
-@login_required
-def list_app():
+@router.get('/list')
+async def list_app(
+    query: ListLLMsQuery = Depends(),
+    current_user = Depends(get_current_user)
+):
+    """列出 LLMs"""
     self_deployed = ["Youdao", "FastEmbed", "BAAI", "Ollama", "Xinference", "LocalAI", "LM-Studio", "GPUStack"]
     weighted = ["Youdao", "FastEmbed", "BAAI"] if settings.LIGHTEN != 0 else []
-    model_type = request.args.get("model_type")
+    model_type = query.model_type
     try:
         objs = TenantLLMService.query(tenant_id=current_user.id)
         facts = set([o.to_dict()["llm_factory"] for o in objs if o.api_key])

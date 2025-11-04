@@ -440,7 +440,14 @@ class FileService(CommonService):
                 while STORAGE_IMPL.obj_exist(kb.id, location):
                     location += "_"
 
-                blob = file.read()
+                # 支持 FastAPI UploadFile，直接使用 file 属性进行同步读取
+                if hasattr(file, 'file') and hasattr(file, 'filename'):
+                    # FastAPI UploadFile
+                    file.file.seek(0)
+                    blob = file.file.read()
+                else:
+                    # 普通文件对象
+                    blob = file.read()
                 if filetype == FileType.PDF.value:
                     blob = read_potential_broken_pdf(blob)
                 STORAGE_IMPL.put(kb.id, location, blob)
@@ -491,7 +498,15 @@ class FileService(CommonService):
         exe = ThreadPoolExecutor(max_workers=12)
         threads = []
         for file in file_objs:
-            threads.append(exe.submit(FileService.parse, file.filename, file.read(), False))
+            # 支持 FastAPI UploadFile，直接使用 file 属性进行同步读取
+            if hasattr(file, 'file') and hasattr(file, 'filename'):
+                # FastAPI UploadFile
+                file.file.seek(0)
+                blob = file.file.read()
+            else:
+                # 普通文件对象
+                blob = file.read()
+            threads.append(exe.submit(FileService.parse, file.filename, blob, False))
 
         res = []
         for th in threads:

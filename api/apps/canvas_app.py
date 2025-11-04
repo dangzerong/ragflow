@@ -18,11 +18,12 @@ import logging
 import re
 import sys
 from functools import partial
+from typing import Optional
 
-import flask
 import trio
-from flask import request, Response
-from flask_login import login_required, current_user
+from fastapi import APIRouter, Depends, Query, Header, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from agent.component import LLM
 from api import settings
@@ -36,7 +37,24 @@ from api.db.services.user_service import TenantService
 from api.db.services.user_canvas_version import UserCanvasVersionService
 from api.settings import RetCode
 from api.utils import get_uuid
-from api.utils.api_utils import get_json_result, server_error_response, validate_request, get_data_error_result
+from api.utils.api_utils import get_json_result, server_error_response, get_data_error_result
+from api.apps.models.auth_dependencies import get_current_user
+from api.apps.models.canvas_models import (
+    DeleteCanvasRequest,
+    SaveCanvasRequest,
+    CompletionRequest,
+    RerunRequest,
+    ResetCanvasRequest,
+    InputFormQuery,
+    DebugRequest,
+    TestDBConnectRequest,
+    ListCanvasQuery,
+    SettingRequest,
+    TraceQuery,
+    ListSessionsQuery,
+    DownloadQuery,
+    UploadQuery,
+)
 from agent.canvas import Canvas
 from peewee import MySQLDatabase, PostgresqlDatabase
 from api.db.db_models import APIToken, Task
@@ -47,18 +65,25 @@ from rag.flow.pipeline import Pipeline
 from rag.nlp import search
 from rag.utils.redis_conn import REDIS_CONN
 
+# 创建路由器
+router = APIRouter()
 
-@manager.route('/templates', methods=['GET'])  # noqa: F821
-@login_required
-def templates():
+
+@router.get('/templates')
+async def templates(
+    current_user = Depends(get_current_user)
+):
+    """获取画布模板列表"""
     return get_json_result(data=[c.to_dict() for c in CanvasTemplateService.get_all()])
 
 
-@manager.route('/rm', methods=['POST'])  # noqa: F821
-@validate_request("canvas_ids")
-@login_required
-def rm():
-    for i in request.json["canvas_ids"]:
+@router.post('/rm')
+async def rm(
+    request: DeleteCanvasRequest,
+    current_user = Depends(get_current_user)
+):
+    """删除画布"""
+    for i in request.canvas_ids:
         if not UserCanvasService.accessible(i, current_user.id):
             return get_json_result(
                 data=False, message='Only owner of canvas authorized for this operation.',
@@ -67,16 +92,18 @@ def rm():
     return get_json_result(data=True)
 
 
-@manager.route('/set', methods=['POST'])  # noqa: F821
-@validate_request("dsl", "title")
-@login_required
-def save():
-    req = request.json
+@router.post('/set')
+async def save(
+    request: SaveCanvasRequest,
+    current_user = Depends(get_current_user)
+):
+    """保存画布"""
+    req = request.model_dump(exclude_unset=True)
     if not isinstance(req["dsl"], str):
         req["dsl"] = json.dumps(req["dsl"], ensure_ascii=False)
     req["dsl"] = json.loads(req["dsl"])
     cate = req.get("canvas_category", CanvasCategory.Agent)
-    if "id" not in req:
+    if "id" not in req or not req.get("id"):
         req["user_id"] = current_user.id
         if UserCanvasService.query(user_id=current_user.id, title=req["title"].strip(), canvas_category=cate):
             return get_data_error_result(message=f"{req['title'].strip()} already exists.")
@@ -95,21 +122,28 @@ def save():
     return get_json_result(data=req)
 
 
-@manager.route('/get/<canvas_id>', methods=['GET'])  # noqa: F821
-@login_required
-def get(canvas_id):
+@router.get('/get/{canvas_id}')
+async def get(
+    canvas_id: str,
+    current_user = Depends(get_current_user)
+):
+    """获取画布详情"""
     if not UserCanvasService.accessible(canvas_id, current_user.id):
         return get_data_error_result(message="canvas not found.")
     e, c = UserCanvasService.get_by_canvas_id(canvas_id)
     return get_json_result(data=c)
 
 
-@manager.route('/getsse/<canvas_id>', methods=['GET'])  # type: ignore # noqa: F821
-def getsse(canvas_id):
-    token = request.headers.get('Authorization').split()
-    if len(token) != 2:
+@router.get('/getsse/{canvas_id}')
+async def getsse(
+    canvas_id: str,
+    authorization: str = Header(..., description="Authorization header")
+):
+    """获取画布详情（SSE，通过API token认证）"""
+    token_parts = authorization.split()
+    if len(token_parts) != 2:
         return get_data_error_result(message='Authorization is not valid!"')
-    token = token[1]
+    token = token_parts[1]
     objs = APIToken.query(beta=token)
     if not objs:
         return get_data_error_result(message='Authentication error: API key is invalid!"')
@@ -126,21 +160,23 @@ def getsse(canvas_id):
     return get_json_result(data=c.to_dict())
 
 
-@manager.route('/completion', methods=['POST'])  # noqa: F821
-@validate_request("id")
-@login_required
-def run():
-    req = request.json
-    query = req.get("query", "")
-    files = req.get("files", [])
-    inputs = req.get("inputs", {})
-    user_id = req.get("user_id", current_user.id)
-    if not UserCanvasService.accessible(req["id"], current_user.id):
+@router.post('/completion')
+async def run(
+    request: CompletionRequest,
+    current_user = Depends(get_current_user)
+):
+    """运行画布（完成/执行）"""
+    query = request.query or ""
+    files = request.files or []
+    inputs = request.inputs or {}
+    user_id = request.user_id or current_user.id
+    
+    if not UserCanvasService.accessible(request.id, current_user.id):
         return get_json_result(
             data=False, message='Only owner of canvas authorized for this operation.',
             code=RetCode.OPERATING_ERROR)
 
-    e, cvs = UserCanvasService.get_by_id(req["id"])
+    e, cvs = UserCanvasService.get_by_id(request.id)
     if not e:
         return get_data_error_result(message="canvas not found.")
 
@@ -149,43 +185,48 @@ def run():
 
     if cvs.canvas_category == CanvasCategory.DataFlow:
         task_id = get_uuid()
-        Pipeline(cvs.dsl, tenant_id=current_user.id, doc_id=CANVAS_DEBUG_DOC_ID, task_id=task_id, flow_id=req["id"])
-        ok, error_message = queue_dataflow(tenant_id=user_id, flow_id=req["id"], task_id=task_id, file=files[0], priority=0)
+        Pipeline(cvs.dsl, tenant_id=current_user.id, doc_id=CANVAS_DEBUG_DOC_ID, task_id=task_id, flow_id=request.id)
+        ok, error_message = queue_dataflow(tenant_id=user_id, flow_id=request.id, task_id=task_id, file=files[0] if files else None, priority=0)
         if not ok:
             return get_data_error_result(message=error_message)
         return get_json_result(data={"message_id": task_id})
 
     try:
-        canvas = Canvas(cvs.dsl, current_user.id, req["id"])
+        canvas = Canvas(cvs.dsl, current_user.id, request.id)
     except Exception as e:
         return server_error_response(e)
 
-    def sse():
+    async def sse():
         nonlocal canvas, user_id
         try:
             for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs):
                 yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
 
             cvs.dsl = json.loads(str(canvas))
-            UserCanvasService.update_by_id(req["id"], cvs.to_dict())
+            UserCanvasService.update_by_id(request.id, cvs.to_dict())
         except Exception as e:
             logging.exception(e)
             yield "data:" + json.dumps({"code": 500, "message": str(e), "data": False}, ensure_ascii=False) + "\n\n"
 
-    resp = Response(sse(), mimetype="text/event-stream")
-    resp.headers.add_header("Cache-control", "no-cache")
-    resp.headers.add_header("Connection", "keep-alive")
-    resp.headers.add_header("X-Accel-Buffering", "no")
-    resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
-    return resp
+    return StreamingResponse(
+        sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Content-Type": "text/event-stream; charset=utf-8"
+        }
+    )
 
 
-@manager.route('/rerun', methods=['POST'])  # noqa: F821
-@validate_request("id", "dsl", "component_id")
-@login_required
-def rerun():
-    req = request.json
-    doc = PipelineOperationLogService.get_documents_info(req["id"])
+@router.post('/rerun')
+async def rerun(
+    request: RerunRequest,
+    current_user = Depends(get_current_user)
+):
+    """重新运行流水线"""
+    doc = PipelineOperationLogService.get_documents_info(request.id)
     if not doc:
         return get_data_error_result(message="Document not found.")
     doc = doc[0]
@@ -198,19 +239,22 @@ def rerun():
     doc["chunk_num"] = 0
     doc["token_num"] = 0
     DocumentService.clear_chunk_num_when_rerun(doc["id"])
-    DocumentService.update_by_id(id, doc)
-    TaskService.filter_delete([Task.doc_id == id])
+    DocumentService.update_by_id(request.id, doc)
+    TaskService.filter_delete([Task.doc_id == request.id])
 
-    dsl = req["dsl"]
-    dsl["path"] = [req["component_id"]]
-    PipelineOperationLogService.update_by_id(req["id"], {"dsl": dsl})
-    queue_dataflow(tenant_id=current_user.id, flow_id=req["id"], task_id=get_uuid(), doc_id=doc["id"], priority=0, rerun=True)
+    dsl = request.dsl
+    dsl["path"] = [request.component_id]
+    PipelineOperationLogService.update_by_id(request.id, {"dsl": dsl})
+    queue_dataflow(tenant_id=current_user.id, flow_id=request.id, task_id=get_uuid(), doc_id=doc["id"], priority=0, rerun=True)
     return get_json_result(data=True)
 
 
-@manager.route('/cancel/<task_id>', methods=['PUT'])  # noqa: F821
-@login_required
-def cancel(task_id):
+@router.put('/cancel/{task_id}')
+async def cancel(
+    task_id: str,
+    current_user = Depends(get_current_user)
+):
+    """取消任务"""
     try:
         REDIS_CONN.set(f"{task_id}-cancel", "x")
     except Exception as e:
@@ -218,36 +262,43 @@ def cancel(task_id):
     return get_json_result(data=True)
 
 
-@manager.route('/reset', methods=['POST'])  # noqa: F821
-@validate_request("id")
-@login_required
-def reset():
-    req = request.json
-    if not UserCanvasService.accessible(req["id"], current_user.id):
+@router.post('/reset')
+async def reset(
+    request: ResetCanvasRequest,
+    current_user = Depends(get_current_user)
+):
+    """重置画布"""
+    if not UserCanvasService.accessible(request.id, current_user.id):
         return get_json_result(
             data=False, message='Only owner of canvas authorized for this operation.',
             code=RetCode.OPERATING_ERROR)
     try:
-        e, user_canvas = UserCanvasService.get_by_id(req["id"])
+        e, user_canvas = UserCanvasService.get_by_id(request.id)
         if not e:
             return get_data_error_result(message="canvas not found.")
 
         canvas = Canvas(json.dumps(user_canvas.dsl), current_user.id)
         canvas.reset()
-        req["dsl"] = json.loads(str(canvas))
-        UserCanvasService.update_by_id(req["id"], {"dsl": req["dsl"]})
-        return get_json_result(data=req["dsl"])
+        dsl = json.loads(str(canvas))
+        UserCanvasService.update_by_id(request.id, {"dsl": dsl})
+        return get_json_result(data=dsl)
     except Exception as e:
         return server_error_response(e)
 
 
-@manager.route("/upload/<canvas_id>", methods=["POST"])  # noqa: F821
-def upload(canvas_id):
+@router.post("/upload/{canvas_id}")
+async def upload(
+    canvas_id: str,
+    url: Optional[str] = Query(None, description="URL（可选，用于从URL下载）"),
+    file: Optional[UploadFile] = File(None, description="上传的文件")
+):
+    """上传文件到画布"""
     e, cvs = UserCanvasService.get_by_canvas_id(canvas_id)
     if not e:
         return get_data_error_result(message="canvas not found.")
 
     user_id = cvs["user_id"]
+    
     def structured(filename, filetype, blob, content_type):
         nonlocal user_id
         if filetype == FileType.PDF.value:
@@ -267,7 +318,7 @@ def upload(canvas_id):
             "preview_url": None
         }
 
-    if request.args.get("url"):
+    if url:
         from crawl4ai import (
             AsyncWebCrawler,
             BrowserConfig,
@@ -277,7 +328,6 @@ def upload(canvas_id):
             CrawlResult
         )
         try:
-            url = request.args.get("url")
             filename = re.sub(r"\?.*", "", url.split("/")[-1])
             async def adownload():
                 browser_config = BrowserConfig(
@@ -301,61 +351,67 @@ def upload(canvas_id):
             if page.pdf:
                 if filename.split(".")[-1].lower() != "pdf":
                     filename += ".pdf"
-                return get_json_result(data=structured(filename, "pdf", page.pdf, page.response_headers["content-type"]))
+                return get_json_result(data=structured(filename, "pdf", page.pdf, page.response_headers.get("content-type", "application/pdf")))
 
-            return get_json_result(data=structured(filename, "html", str(page.markdown).encode("utf-8"), page.response_headers["content-type"], user_id))
+            return get_json_result(data=structured(filename, "html", str(page.markdown).encode("utf-8"), page.response_headers.get("content-type", "text/html"), user_id))
 
         except Exception as e:
-            return  server_error_response(e)
+            return server_error_response(e)
 
-    file = request.files['file']
+    if not file:
+        return get_data_error_result(message="No file provided.")
+    
     try:
         DocumentService.check_doc_health(user_id, file.filename)
-        return get_json_result(data=structured(file.filename, filename_type(file.filename), file.read(), file.content_type))
+        blob = await file.read()
+        return get_json_result(data=structured(file.filename, filename_type(file.filename), blob, file.content_type or "application/octet-stream"))
     except Exception as e:
-        return  server_error_response(e)
+        return server_error_response(e)
 
 
-@manager.route('/input_form', methods=['GET'])  # noqa: F821
-@login_required
-def input_form():
-    cvs_id = request.args.get("id")
-    cpn_id = request.args.get("component_id")
+@router.get('/input_form')
+async def input_form(
+    id: str = Query(..., description="画布ID"),
+    component_id: str = Query(..., description="组件ID"),
+    current_user = Depends(get_current_user)
+):
+    """获取组件输入表单"""
     try:
-        e, user_canvas = UserCanvasService.get_by_id(cvs_id)
+        e, user_canvas = UserCanvasService.get_by_id(id)
         if not e:
             return get_data_error_result(message="canvas not found.")
-        if not UserCanvasService.query(user_id=current_user.id, id=cvs_id):
+        if not UserCanvasService.query(user_id=current_user.id, id=id):
             return get_json_result(
                 data=False, message='Only owner of canvas authorized for this operation.',
                 code=RetCode.OPERATING_ERROR)
 
         canvas = Canvas(json.dumps(user_canvas.dsl), current_user.id)
-        return get_json_result(data=canvas.get_component_input_form(cpn_id))
+        return get_json_result(data=canvas.get_component_input_form(component_id))
     except Exception as e:
         return server_error_response(e)
 
 
-@manager.route('/debug', methods=['POST'])  # noqa: F821
-@validate_request("id", "component_id", "params")
-@login_required
-def debug():
-    req = request.json
-    if not UserCanvasService.accessible(req["id"], current_user.id):
+@router.post('/debug')
+async def debug(
+    request: DebugRequest,
+    current_user = Depends(get_current_user)
+):
+    """调试组件"""
+    if not UserCanvasService.accessible(request.id, current_user.id):
         return get_json_result(
             data=False, message='Only owner of canvas authorized for this operation.',
             code=RetCode.OPERATING_ERROR)
     try:
-        e, user_canvas = UserCanvasService.get_by_id(req["id"])
+        e, user_canvas = UserCanvasService.get_by_id(request.id)
         canvas = Canvas(json.dumps(user_canvas.dsl), current_user.id)
         canvas.reset()
         canvas.message_id = get_uuid()
-        component = canvas.get_component(req["component_id"])["obj"]
+        component = canvas.get_component(request.component_id)["obj"]
         component.reset()
 
         if isinstance(component, LLM):
-            component.set_debug_inputs(req["params"])
-        component.invoke(**{k: o["value"] for k,o in req["params"].items()})
+            component.set_debug_inputs(request.params)
+        component.invoke(**{k: o["value"] for k,o in request.params.items()})
         outputs = component.output()
         for k in outputs.keys():
             if isinstance(outputs[k], partial):
@@ -368,11 +424,13 @@ def debug():
         return server_error_response(e)
 
 
-@manager.route('/test_db_connect', methods=['POST'])  # noqa: F821
-@validate_request("db_type", "database", "username", "host", "port", "password")
-@login_required
-def test_db_connect():
-    req = request.json
+@router.post('/test_db_connect')
+async def test_db_connect(
+    request: TestDBConnectRequest,
+    current_user = Depends(get_current_user)
+):
+    """测试数据库连接"""
+    req = request.model_dump()
     try:
         if req["db_type"] in ["mysql", "mariadb"]:
             db = MySQLDatabase(req["database"], user=req["username"], host=req["host"], port=req["port"],
@@ -464,42 +522,48 @@ def test_db_connect():
 
 
 #api get list version dsl of canvas
-@manager.route('/getlistversion/<canvas_id>', methods=['GET'])  # noqa: F821
-@login_required
-def getlistversion(canvas_id):
+@router.get('/getlistversion/{canvas_id}')
+async def getlistversion(
+    canvas_id: str,
+    current_user = Depends(get_current_user)
+):
+    """获取画布版本列表"""
     try:
-        list =sorted([c.to_dict() for c in UserCanvasVersionService.list_by_canvas_id(canvas_id)], key=lambda x: x["update_time"]*-1)
+        list = sorted([c.to_dict() for c in UserCanvasVersionService.list_by_canvas_id(canvas_id)], key=lambda x: x["update_time"]*-1)
         return get_json_result(data=list)
     except Exception as e:
         return get_data_error_result(message=f"Error getting history files: {e}")
 
 
-#api get version dsl of canvas
-@manager.route('/getversion/<version_id>', methods=['GET'])  # noqa: F821
-@login_required
-def getversion( version_id):
+@router.get('/getversion/{version_id}')
+async def getversion(
+    version_id: str,
+    current_user = Depends(get_current_user)
+):
+    """获取画布版本详情"""
     try:
-
         e, version = UserCanvasVersionService.get_by_id(version_id)
         if version:
             return get_json_result(data=version.to_dict())
+        return get_data_error_result(message="Version not found.")
     except Exception as e:
-        return get_json_result(data=f"Error getting history file: {e}")
+        return get_data_error_result(message=f"Error getting history file: {e}")
 
 
-@manager.route('/list', methods=['GET'])  # noqa: F821
-@login_required
-def list_canvas():
-    keywords = request.args.get("keywords", "")
-    page_number = int(request.args.get("page", 0))
-    items_per_page = int(request.args.get("page_size", 0))
-    orderby = request.args.get("orderby", "create_time")
-    canvas_category = request.args.get("canvas_category")
-    if request.args.get("desc", "true").lower() == "false":
-        desc = False
-    else:
-        desc = True
-    owner_ids = [id for id in request.args.get("owner_ids", "").strip().split(",") if id]
+@router.get('/list')
+async def list_canvas(
+    query: ListCanvasQuery = Depends(),
+    current_user = Depends(get_current_user)
+):
+    """列出画布"""
+    keywords = query.keywords or ""
+    page_number = int(query.page or 0)
+    items_per_page = int(query.page_size or 0)
+    orderby = query.orderby or "create_time"
+    canvas_category = query.canvas_category
+    desc = query.desc.lower() == "false" if query.desc else True
+    owner_ids = [id for id in (query.owner_ids or "").strip().split(",") if id]
+    
     if not owner_ids:
         tenants = TenantService.get_joined_tenants_by_user_id(current_user.id)
         tenants = [m["tenant_id"] for m in tenants]
@@ -515,68 +579,73 @@ def list_canvas():
     return get_json_result(data={"canvas": canvas, "total": total})
 
 
-@manager.route('/setting', methods=['POST'])  # noqa: F821
-@validate_request("id", "title", "permission")
-@login_required
-def setting():
-    req = request.json
-    req["user_id"] = current_user.id
-
-    if not UserCanvasService.accessible(req["id"], current_user.id):
+@router.post('/setting')
+async def setting(
+    request: SettingRequest,
+    current_user = Depends(get_current_user)
+):
+    """设置画布"""
+    if not UserCanvasService.accessible(request.id, current_user.id):
         return get_json_result(
             data=False, message='Only owner of canvas authorized for this operation.',
             code=RetCode.OPERATING_ERROR)
 
-    e,flow = UserCanvasService.get_by_id(req["id"])
+    e, flow = UserCanvasService.get_by_id(request.id)
     if not e:
         return get_data_error_result(message="canvas not found.")
     flow = flow.to_dict()
-    flow["title"] = req["title"]
+    flow["title"] = request.title
 
     for key in ["description", "permission", "avatar"]:
-        if value := req.get(key):
+        value = getattr(request, key, None)
+        if value:
             flow[key] = value
 
-    num= UserCanvasService.update_by_id(req["id"], flow)
+    num = UserCanvasService.update_by_id(request.id, flow)
     return get_json_result(data=num)
 
 
-@manager.route('/trace', methods=['GET'])  # noqa: F821
-def trace():
-    cvs_id = request.args.get("canvas_id")
-    msg_id = request.args.get("message_id")
+@router.get('/trace')
+async def trace(
+    canvas_id: str = Query(..., description="画布ID"),
+    message_id: str = Query(..., description="消息ID")
+):
+    """追踪日志"""
     try:
-        bin = REDIS_CONN.get(f"{cvs_id}-{msg_id}-logs")
+        bin = REDIS_CONN.get(f"{canvas_id}-{message_id}-logs")
         if not bin:
             return get_json_result(data={})
 
         return get_json_result(data=json.loads(bin.encode("utf-8")))
     except Exception as e:
         logging.exception(e)
+        return server_error_response(e)
 
 
-@manager.route('/<canvas_id>/sessions', methods=['GET'])  # noqa: F821
-@login_required
-def sessions(canvas_id):
+@router.get('/{canvas_id}/sessions')
+async def sessions(
+    canvas_id: str,
+    query: ListSessionsQuery = Depends(),
+    current_user = Depends(get_current_user)
+):
+    """列出画布会话"""
     tenant_id = current_user.id
     if not UserCanvasService.accessible(canvas_id, tenant_id):
         return get_json_result(
             data=False, message='Only owner of canvas authorized for this operation.',
             code=RetCode.OPERATING_ERROR)
 
-    user_id = request.args.get("user_id")
-    page_number = int(request.args.get("page", 1))
-    items_per_page = int(request.args.get("page_size", 30))
-    keywords = request.args.get("keywords")
-    from_date = request.args.get("from_date")
-    to_date = request.args.get("to_date")
-    orderby = request.args.get("orderby", "update_time")
-    if request.args.get("desc") == "False" or request.args.get("desc") == "false":
-        desc = False
-    else:
-        desc = True
+    user_id = query.user_id
+    page_number = int(query.page or 1)
+    items_per_page = int(query.page_size or 30)
+    keywords = query.keywords
+    from_date = query.from_date
+    to_date = query.to_date
+    orderby = query.orderby or "update_time"
+    desc = query.desc.lower() in ["false", "False"] if query.desc else True
     # dsl defaults to True in all cases except for False and false
-    include_dsl = request.args.get("dsl") != "False" and request.args.get("dsl") != "false"
+    include_dsl = query.dsl.lower() not in ["false", "False"] if query.dsl else True
+    
     total, sess = API4ConversationService.get_list(canvas_id, tenant_id, page_number, items_per_page, orderby, desc,
                                              None, user_id, include_dsl, keywords, from_date, to_date)
     try:
@@ -585,9 +654,11 @@ def sessions(canvas_id):
         return server_error_response(e)
 
 
-@manager.route('/prompts', methods=['GET'])  # noqa: F821
-@login_required
-def prompts():
+@router.get('/prompts')
+async def prompts(
+    current_user = Depends(get_current_user)
+):
+    """获取提示词模板"""
     from rag.prompts.generator import ANALYZE_TASK_SYSTEM, ANALYZE_TASK_USER, NEXT_STEP, REFLECT, CITATION_PROMPT_TEMPLATE
     return get_json_result(data={
         "task_analysis": ANALYZE_TASK_SYSTEM +"\n\n"+ ANALYZE_TASK_USER,
@@ -599,9 +670,11 @@ def prompts():
     })
 
 
-@manager.route('/download', methods=['GET'])  # noqa: F821
-def download():
-    id = request.args.get("id")
-    created_by = request.args.get("created_by")
+@router.get('/download')
+async def download(
+    id: str = Query(..., description="文件ID"),
+    created_by: str = Query(..., description="创建者ID")
+):
+    """下载文件"""
     blob = FileService.get_blob(created_by, id)
-    return flask.make_response(blob)
+    return Response(content=blob)

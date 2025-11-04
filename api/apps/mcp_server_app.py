@@ -13,8 +13,22 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-from flask import Response, request
-from flask_login import current_user, login_required
+from fastapi import APIRouter, Depends, Query
+
+from api.apps.models.auth_dependencies import get_current_user
+from api.apps.models.mcp_models import (
+    ListMCPServersQuery,
+    ListMCPServersBody,
+    CreateMCPServerRequest,
+    UpdateMCPServerRequest,
+    DeleteMCPServersRequest,
+    ImportMCPServersRequest,
+    ExportMCPServersRequest,
+    ListMCPToolsRequest,
+    TestMCPToolRequest,
+    CacheMCPToolsRequest,
+    TestMCPRequest,
+)
 
 from api.db import VALID_MCP_SERVER_TYPES
 from api.db.db_models import MCPServer
@@ -23,26 +37,31 @@ from api.db.services.user_service import TenantService
 from api.settings import RetCode
 
 from api.utils import get_uuid
-from api.utils.api_utils import get_data_error_result, get_json_result, server_error_response, validate_request, \
-    get_mcp_tools
-from api.utils.web_utils import get_float, safe_json_parse
+from api.utils.api_utils import get_data_error_result, get_json_result, server_error_response, get_mcp_tools
+from api.utils.web_utils import safe_json_parse
 from rag.utils.mcp_tool_call_conn import MCPToolCallSession, close_multiple_mcp_toolcall_sessions
 
+# 创建路由器
+router = APIRouter()
 
-@manager.route("/list", methods=["POST"])  # noqa: F821
-@login_required
-def list_mcp() -> Response:
-    keywords = request.args.get("keywords", "")
-    page_number = int(request.args.get("page", 0))
-    items_per_page = int(request.args.get("page_size", 0))
-    orderby = request.args.get("orderby", "create_time")
-    if request.args.get("desc", "true").lower() == "false":
-        desc = False
-    else:
-        desc = True
 
-    req = request.get_json()
-    mcp_ids = req.get("mcp_ids", [])
+@router.post("/list")
+async def list_mcp(
+    query: ListMCPServersQuery = Depends(),
+    body: ListMCPServersBody = None,
+    current_user = Depends(get_current_user)
+):
+    """列出MCP服务器"""
+    if body is None:
+        body = ListMCPServersBody()
+    
+    keywords = query.keywords or ""
+    page_number = int(query.page or 0)
+    items_per_page = int(query.page_size or 0)
+    orderby = query.orderby or "create_time"
+    desc = query.desc.lower() == "true" if query.desc else True
+
+    mcp_ids = body.mcp_ids or []
     try:
         servers = MCPServerService.get_servers(current_user.id, mcp_ids, 0, 0, orderby, desc, keywords) or []
         total = len(servers)
@@ -55,10 +74,12 @@ def list_mcp() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/detail", methods=["GET"])  # noqa: F821
-@login_required
-def detail() -> Response:
-    mcp_id = request.args["mcp_id"]
+@router.get("/detail")
+async def detail(
+    mcp_id: str = Query(..., description="MCP服务器ID"),
+    current_user = Depends(get_current_user)
+):
+    """获取MCP服务器详情"""
     try:
         mcp_server = MCPServerService.get_or_none(id=mcp_id, tenant_id=current_user.id)
 
@@ -70,17 +91,17 @@ def detail() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/create", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("name", "url", "server_type")
-def create() -> Response:
-    req = request.get_json()
-
-    server_type = req.get("server_type", "")
+@router.post("/create")
+async def create(
+    request: CreateMCPServerRequest,
+    current_user = Depends(get_current_user)
+):
+    """创建MCP服务器"""
+    server_type = request.server_type
     if server_type not in VALID_MCP_SERVER_TYPES:
         return get_data_error_result(message="Unsupported MCP server type.")
 
-    server_name = req.get("name", "")
+    server_name = request.name
     if not server_name or len(server_name.encode("utf-8")) > 255:
         return get_data_error_result(message=f"Invalid MCP name or length is {len(server_name)} which is large than 255.")
 
@@ -88,20 +109,26 @@ def create() -> Response:
     if e:
         return get_data_error_result(message="Duplicated MCP server name.")
 
-    url = req.get("url", "")
+    url = request.url
     if not url:
         return get_data_error_result(message="Invalid url.")
 
-    headers = safe_json_parse(req.get("headers", {}))
-    req["headers"] = headers
-    variables = safe_json_parse(req.get("variables", {}))
+    headers = safe_json_parse(request.headers or {})
+    variables = safe_json_parse(request.variables or {})
     variables.pop("tools", None)
 
-    timeout = get_float(req, "timeout", 10)
+    timeout = request.timeout or 10.0
 
     try:
-        req["id"] = get_uuid()
-        req["tenant_id"] = current_user.id
+        req = {
+            "id": get_uuid(),
+            "tenant_id": current_user.id,
+            "name": server_name,
+            "url": url,
+            "server_type": server_type,
+            "headers": headers,
+            "variables": variables,
+        }
 
         e, _ = TenantService.get_by_id(current_user.id)
         if not e:
@@ -125,39 +152,43 @@ def create() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/update", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcp_id")
-def update() -> Response:
-    req = request.get_json()
-
-    mcp_id = req.get("mcp_id", "")
+@router.post("/update")
+async def update(
+    request: UpdateMCPServerRequest,
+    current_user = Depends(get_current_user)
+):
+    """更新MCP服务器"""
+    mcp_id = request.mcp_id
     e, mcp_server = MCPServerService.get_by_id(mcp_id)
     if not e or mcp_server.tenant_id != current_user.id:
         return get_data_error_result(message=f"Cannot find MCP server {mcp_id} for user {current_user.id}")
 
-    server_type = req.get("server_type", mcp_server.server_type)
+    server_type = request.server_type if request.server_type is not None else mcp_server.server_type
     if server_type and server_type not in VALID_MCP_SERVER_TYPES:
         return get_data_error_result(message="Unsupported MCP server type.")
-    server_name = req.get("name", mcp_server.name)
+    server_name = request.name if request.name is not None else mcp_server.name
     if server_name and len(server_name.encode("utf-8")) > 255:
         return get_data_error_result(message=f"Invalid MCP name or length is {len(server_name)} which is large than 255.")
-    url = req.get("url", mcp_server.url)
+    url = request.url if request.url is not None else mcp_server.url
     if not url:
         return get_data_error_result(message="Invalid url.")
 
-    headers = safe_json_parse(req.get("headers", mcp_server.headers))
-    req["headers"] = headers
-
-    variables = safe_json_parse(req.get("variables", mcp_server.variables))
+    headers = safe_json_parse(request.headers if request.headers is not None else mcp_server.headers)
+    variables = safe_json_parse(request.variables if request.variables is not None else mcp_server.variables)
     variables.pop("tools", None)
 
-    timeout = get_float(req, "timeout", 10)
+    timeout = request.timeout or 10.0
 
     try:
-        req["tenant_id"] = current_user.id
-        req.pop("mcp_id", None)
-        req["id"] = mcp_id
+        req = {
+            "tenant_id": current_user.id,
+            "id": mcp_id,
+            "name": server_name,
+            "url": url,
+            "server_type": server_type,
+            "headers": headers,
+            "variables": variables,
+        }
 
         mcp_server = MCPServer(id=server_name, name=server_name, url=url, server_type=server_type, variables=variables, headers=headers)
         server_tools, err_message = get_mcp_tools([mcp_server], timeout)
@@ -181,16 +212,15 @@ def update() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/rm", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcp_ids")
-def rm() -> Response:
-    req = request.get_json()
-    mcp_ids = req.get("mcp_ids", [])
+@router.post("/rm")
+async def rm(
+    request: DeleteMCPServersRequest,
+    current_user = Depends(get_current_user)
+):
+    """删除MCP服务器"""
+    mcp_ids = request.mcp_ids
 
     try:
-        req["tenant_id"] = current_user.id
-
         if not MCPServerService.delete_by_ids(mcp_ids):
             return get_data_error_result(message=f"Failed to delete MCP servers {mcp_ids}")
 
@@ -199,16 +229,17 @@ def rm() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/import", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcpServers")
-def import_multiple() -> Response:
-    req = request.get_json()
-    servers = req.get("mcpServers", {})
+@router.post("/import")
+async def import_multiple(
+    request: ImportMCPServersRequest,
+    current_user = Depends(get_current_user)
+):
+    """批量导入MCP服务器"""
+    servers = request.mcpServers
     if not servers:
         return get_data_error_result(message="No MCP servers provided.")
 
-    timeout = get_float(req, "timeout", 10)
+    timeout = request.timeout or 10.0
 
     results = []
     try:
@@ -266,12 +297,13 @@ def import_multiple() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/export", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcp_ids")
-def export_multiple() -> Response:
-    req = request.get_json()
-    mcp_ids = req.get("mcp_ids", [])
+@router.post("/export")
+async def export_multiple(
+    request: ExportMCPServersRequest,
+    current_user = Depends(get_current_user)
+):
+    """批量导出MCP服务器"""
+    mcp_ids = request.mcp_ids
 
     if not mcp_ids:
         return get_data_error_result(message="No MCP server IDs provided.")
@@ -298,16 +330,17 @@ def export_multiple() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/list_tools", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcp_ids")
-def list_tools() -> Response:
-    req = request.get_json()
-    mcp_ids = req.get("mcp_ids", [])
+@router.post("/list_tools")
+async def list_tools(
+    request: ListMCPToolsRequest,
+    current_user = Depends(get_current_user)
+):
+    """列出MCP工具"""
+    mcp_ids = request.mcp_ids
     if not mcp_ids:
         return get_data_error_result(message="No MCP server IDs provided.")
 
-    timeout = get_float(req, "timeout", 10)
+    timeout = request.timeout or 10.0
 
     results = {}
     tool_call_sessions = []
@@ -345,19 +378,20 @@ def list_tools() -> Response:
         close_multiple_mcp_toolcall_sessions(tool_call_sessions)
 
 
-@manager.route("/test_tool", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcp_id", "tool_name", "arguments")
-def test_tool() -> Response:
-    req = request.get_json()
-    mcp_id = req.get("mcp_id", "")
+@router.post("/test_tool")
+async def test_tool(
+    request: TestMCPToolRequest,
+    current_user = Depends(get_current_user)
+):
+    """测试MCP工具"""
+    mcp_id = request.mcp_id
     if not mcp_id:
         return get_data_error_result(message="No MCP server ID provided.")
 
-    timeout = get_float(req, "timeout", 10)
+    timeout = request.timeout or 10.0
 
-    tool_name = req.get("tool_name", "")
-    arguments = req.get("arguments", {})
+    tool_name = request.tool_name
+    arguments = request.arguments
     if not all([tool_name, arguments]):
         return get_data_error_result(message="Require provide tool name and arguments.")
 
@@ -378,15 +412,16 @@ def test_tool() -> Response:
         return server_error_response(e)
 
 
-@manager.route("/cache_tools", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("mcp_id", "tools")
-def cache_tool() -> Response:
-    req = request.get_json()
-    mcp_id = req.get("mcp_id", "")
+@router.post("/cache_tools")
+async def cache_tool(
+    request: CacheMCPToolsRequest,
+    current_user = Depends(get_current_user)
+):
+    """缓存MCP工具"""
+    mcp_id = request.mcp_id
     if not mcp_id:
         return get_data_error_result(message="No MCP server ID provided.")
-    tools = req.get("tools", [])
+    tools = request.tools
 
     e, mcp_server = MCPServerService.get_by_id(mcp_id)
     if not e or mcp_server.tenant_id != current_user.id:
@@ -402,22 +437,22 @@ def cache_tool() -> Response:
     return get_json_result(data=tools)
 
 
-@manager.route("/test_mcp", methods=["POST"])  # noqa: F821
-@validate_request("url", "server_type")
-def test_mcp() -> Response:
-    req = request.get_json()
-
-    url = req.get("url", "")
+@router.post("/test_mcp")
+async def test_mcp(
+    request: TestMCPRequest
+):
+    """测试MCP服务器（不需要登录）"""
+    url = request.url
     if not url:
         return get_data_error_result(message="Invalid MCP url.")
 
-    server_type = req.get("server_type", "")
+    server_type = request.server_type
     if server_type not in VALID_MCP_SERVER_TYPES:
         return get_data_error_result(message="Unsupported MCP server type.")
 
-    timeout = get_float(req, "timeout", 10)
-    headers = safe_json_parse(req.get("headers", {}))
-    variables = safe_json_parse(req.get("variables", {}))
+    timeout = request.timeout or 10.0
+    headers = safe_json_parse(request.headers or {})
+    variables = safe_json_parse(request.variables or {})
 
     mcp_server = MCPServer(id=f"{server_type}: {url}", server_type=server_type, url=url, headers=headers, variables=variables)
 
